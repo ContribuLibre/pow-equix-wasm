@@ -2,8 +2,9 @@
 # GitHub avec le module et son empreinte : chacun peut reconstruire depuis ce tag
 # (bun run verify:reproductible --attendu <sha256>) et comparer.
 #
-# Secret requis : NPM_TOKEN, jeton npm « Automation » ou « Granular » avec droit
-# de publication sur pow-equix-wasm.
+# Aucun secret : npm fait confiance à ce workflow par OIDC (« trusted
+# publishing », déclaré par `npm trust github --file publication.yml`), et signe
+# la provenance du paquet publié.
 name: Publication npm
 
 on:
@@ -12,6 +13,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
   publier:
@@ -22,20 +24,33 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.0
+      # La publication de confiance passe par la commande npm (≥ 11.5.1), pas par bun.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - run: npm install --global npm@^11.15.0
       - name: Le tag correspond à la version du paquet
         run: test "v$(bun -e 'console.log(require("./package.json").version)')" = "$GITHUB_REF_NAME"
       - run: bun install --frozen-lockfile
-      # `bun publish` lance d’abord prepublishOnly, c’est-à-dire `bun run check` :
+      - name: Version déjà publiée ?
+        id: npm
+        run: |
+          VERSION=$(bun -e 'console.log(require("./package.json").version)')
+          if npm view "pow-equix-wasm@$VERSION" version > /dev/null 2>&1; then echo "publiee=oui" >> "$GITHUB_OUTPUT"; else echo "publiee=non" >> "$GITHUB_OUTPUT"; fi
+      # `npm publish` lance d’abord prepublishOnly, c’est-à-dire `bun run check` :
       # tests, construction, démo et reproductibilité.
-      - name: Publier sur npm
-        run: bun publish --access public
-        env:
-          NPM_CONFIG_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Publier sur npm (OIDC, provenance signée)
+        if: steps.npm.outputs.publiee == 'non'
+        run: npm publish --access public --provenance
+      - name: Construire pour la release (version déjà publiée)
+        if: steps.npm.outputs.publiee == 'oui'
+        run: bun run check
       - name: Release GitHub
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           SHA=$(bun -e 'console.log(require("./dist/empreinte.json").sha256)')
-          gh release create "$GITHUB_REF_NAME" dist/equix.wasm dist/empreinte.json \
+          gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" dist/equix.wasm dist/empreinte.json \
             --title "$GITHUB_REF_NAME" \
             --notes "Module equix.wasm, sha256 \`$SHA\`. Reproduire : \`bun run build && bun run verify:reproductible --attendu $SHA\`."

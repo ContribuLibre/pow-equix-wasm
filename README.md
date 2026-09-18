@@ -6,7 +6,7 @@ navigateur, sur plusieurs cœurs, et la vérifie côté serveur en quelques cent
 de microsecondes.
 
 - **Démo et calibrage** : <https://contribulibre.github.io/pow-equix-wasm/>
-- **Paquet npm** : `pow-equix-wasm`
+- **Paquet npm** : [`pow-equix-wasm`](https://www.npmjs.com/package/pow-equix-wasm)
 
 > *English summary: Equi-X proof of work (from Tor's Arti project) as a single
 > WebAssembly module. It solves in the browser across Web Workers (cancellable,
@@ -130,8 +130,9 @@ Il faut Rust (via rustup, qui installe seul la version figée et la cible
 - **Démo** : chaque push sur `main` la publie sur GitHub Pages (réglage du dépôt :
   *Settings → Pages → Source : GitHub Actions*).
 - **npm** : pousser un tag `vX.Y.Z` égal à la version de `package.json`. Le
-  workflow vérifie tout, publie avec le secret `NPM_TOKEN`, puis crée la release
-  GitHub avec `equix.wasm` et son empreinte.
+  workflow vérifie tout, publie sans aucun secret (publication de confiance
+  npm par OIDC, avec provenance signée), puis crée la release GitHub avec
+  `equix.wasm` et son empreinte.
 
 ## Organisation
 
