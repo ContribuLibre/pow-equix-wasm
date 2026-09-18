@@ -60,7 +60,15 @@ remplir(element('appareil'), [
   ['Navigateur', appareil.navigateur],
 ])
 element('alerte-wasm').hidden = appareil.webAssembly
-;(formulaire.elements.namedItem('fils') as HTMLInputElement).value = String(filsParDefaut())
+const champFils = formulaire.elements.namedItem('fils') as HTMLInputElement
+/** Tant qu’il n’est pas modifié à la main, le champ suit le choix par défaut du paquet. */
+let filsChoisis = false
+function filsDuPaquet(): void {
+  const { effort, nombre } = reglages()
+  if (!filsChoisis && effort >= 1 && nombre >= 1) champFils.value = String(Math.min(filsParDefaut(), Math.ceil(essaisAttendus(effort, nombre))))
+}
+champFils.addEventListener('input', () => { filsChoisis = true })
+filsDuPaquet()
 
 let tempsParEssai: number | undefined
 
@@ -73,7 +81,10 @@ function estimer(): void {
   if (tempsParEssai) texte.push(`D’après la dernière mesure, environ ${duree(essais * tempsParEssai / Math.min(Math.max(1, fils), essais))} avec ${Math.max(1, fils)} fil(s).`)
   element('estimation').textContent = texte.join(' ')
 }
-formulaire.addEventListener('input', estimer)
+formulaire.addEventListener('input', () => {
+  filsDuPaquet()
+  estimer()
+})
 estimer()
 
 const moduleEquix = fetch('./equix.wasm').then(async (reponse) => {
