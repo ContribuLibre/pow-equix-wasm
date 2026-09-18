@@ -1,0 +1,41 @@
+# Publie le paquet sur npm quand un tag vX.Y.Z est poussé, puis crée la release
+# GitHub avec le module et son empreinte : chacun peut reconstruire depuis ce tag
+# (bun run verify:reproductible --attendu <sha256>) et comparer.
+#
+# Secret requis : NPM_TOKEN, jeton npm « Automation » ou « Granular » avec droit
+# de publication sur pow-equix-wasm.
+name: Publication npm
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: write
+
+jobs:
+  publier:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - name: Le tag correspond à la version du paquet
+        run: test "v$(bun -e 'console.log(require("./package.json").version)')" = "$GITHUB_REF_NAME"
+      - run: bun install --frozen-lockfile
+      # `bun publish` lance d’abord prepublishOnly, c’est-à-dire `bun run check` :
+      # tests, construction, démo et reproductibilité.
+      - name: Publier sur npm
+        run: bun publish --access public
+        env:
+          NPM_CONFIG_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Release GitHub
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          SHA=$(bun -e 'console.log(require("./dist/empreinte.json").sha256)')
+          gh release create "$GITHUB_REF_NAME" dist/equix.wasm dist/empreinte.json \
+            --title "$GITHUB_REF_NAME" \
+            --notes "Module equix.wasm, sha256 \`$SHA\`. Reproduire : \`bun run build && bun run verify:reproductible --attendu $SHA\`."

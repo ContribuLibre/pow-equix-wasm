@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>pow-equix-wasm — démo et calibrage</title>
+  <meta name="description" content="Mesurer sur son appareil le temps et la mémoire d’une preuve de travail Equi-X, et le coût de sa vérification.">
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <main>
+    <header>
+      <h1>pow-equix-wasm</h1>
+      <p>Preuve de travail <strong>Equi-X</strong> (celle de Tor) compilée en WebAssembly : un seul module résout dans le navigateur et vérifie côté serveur. Cette page mesure, sur <em>cet</em> appareil, ce que coûte une preuve pour choisir les seuils de difficulté.</p>
+      <p class="liens"><a href="https://github.com/ContribuLibre/pow-equix-wasm">Code source</a> · <a href="https://www.npmjs.com/package/pow-equix-wasm">Paquet npm</a></p>
+    </header>
+
+    <section aria-labelledby="titre-appareil">
+      <h2 id="titre-appareil">Appareil</h2>
+      <dl id="appareil" class="grille"></dl>
+      <p id="alerte-wasm" class="alerte" hidden>WebAssembly est indisponible dans ce navigateur (mode renforcé, isolement, JIT désactivé…) : aucune preuve ne peut être calculée ici.</p>
+    </section>
+
+    <section aria-labelledby="titre-reglages">
+      <h2 id="titre-reglages">Réglages</h2>
+      <form id="reglages">
+        <label>Effort par part
+          <input name="effort" type="number" min="1" max="4294967295" step="1" value="1" required>
+          <small>Une solution Equi-X sur « effort » est retenue.</small>
+        </label>
+        <label>Nombre de parts
+          <input name="nombre" type="number" min="1" max="64" step="1" value="4" required>
+          <small>Plusieurs petites preuves rendent l’attente plus régulière.</small>
+        </label>
+        <label>Web Workers
+          <input name="fils" type="number" min="0" max="64" step="1" required>
+          <small>0 : fil principal. Sans réglage, le paquet en prend autant que de cœurs, sans dépasser les essais attendus.</small>
+        </label>
+        <label>Répétitions
+          <input name="repetitions" type="number" min="1" max="200" step="1" value="5" required>
+          <small>Le temps est aléatoire : médiane et 90ᵉ centile demandent plusieurs mesures.</small>
+        </label>
+        <label>Vérifications
+          <input name="verifications" type="number" min="1" max="100000" step="1" value="500" required>
+          <small>Répétées sur la dernière preuve pour mesurer leur coût.</small>
+        </label>
+        <p id="estimation" class="estimation" aria-live="polite"></p>
+        <div class="actions">
+          <button id="lancer" type="submit">Lancer</button>
+          <button id="annuler" type="button" hidden>Annuler</button>
+        </div>
+      </form>
+    </section>
+
+    <section aria-labelledby="titre-progression" id="bloc-progression" hidden>
+      <h2 id="titre-progression">Progression</h2>
+      <p id="etat" role="status" aria-live="polite"></p>
+      <progress id="barre" max="1" value="0"></progress>
+      <dl id="direct" class="grille"></dl>
+    </section>
+
+    <section aria-labelledby="titre-resultats" id="bloc-resultats" hidden>
+      <h2 id="titre-resultats">Résultats</h2>
+      <h3>Calcul de la preuve</h3>
+      <dl id="synthese" class="grille"></dl>
+      <div class="defilement">
+        <table>
+          <thead><tr><th scope="col">n°</th><th scope="col">Durée</th><th scope="col">Essais</th><th scope="col">Essais/s</th><th scope="col">Mémoire WebAssembly</th></tr></thead>
+          <tbody id="lignes"></tbody>
+        </table>
+      </div>
+      <h3>Vérification</h3>
+      <dl id="verification" class="grille"></dl>
+      <h3>Exporter</h3>
+      <p>Pour comparer plusieurs appareils, copie ces mesures (avec l’appareil et les réglages) :</p>
+      <textarea id="export" rows="8" readonly></textarea>
+      <div class="actions"><button id="copier" type="button">Copier le JSON</button></div>
+    </section>
+  </main>
+  <script type="module" src="./demo.js"></script>
+</body>
+</html>

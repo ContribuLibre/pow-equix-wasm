@@ -1,0 +1,26 @@
+# Preuve de travail Equi-X pour le web.
+#
+# `pow-equix` porte le format du défi, la résolution et la vérification ; il se
+# réutilise tel quel en natif (application Tauri, serveur Rust), avec le
+# compilateur HashX. `pow-equix-wasm` l’expose au navigateur, aux Web Workers et
+# aux serveurs JavaScript par une interface C minimale, sans wasm-bindgen.
+[workspace]
+resolver = "3"
+members = ["crates/pow-equix", "crates/pow-equix-wasm"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91"
+# Equi-X et HashX (projet Arti de Tor) sont sous LGPL-3.0-only.
+license = "LGPL-3.0-only"
+repository = "https://github.com/ContribuLibre/pow-equix-wasm"
+publish = false
+
+[profile.release]
+# Le solveur boucle sur l’interpréteur HashX : la vitesse prime sur la taille.
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

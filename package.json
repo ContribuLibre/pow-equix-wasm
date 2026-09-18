@@ -1,0 +1,52 @@
+{
+  "name": "pow-equix-wasm",
+  "version": "0.1.0",
+  "description": "Preuve de travail Equi-X (Tor/Arti) en WebAssembly : un seul module qui résout dans le navigateur et vérifie côté serveur",
+  "keywords": ["proof-of-work", "pow", "equix", "hashx", "tor", "anti-spam", "webassembly", "wasm"],
+  "license": "LGPL-3.0-only",
+  "homepage": "https://contribulibre.github.io/pow-equix-wasm/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ContribuLibre/pow-equix-wasm.git"
+  },
+  "bugs": "https://github.com/ContribuLibre/pow-equix-wasm/issues",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./octets": {
+      "types": "./dist/octets.d.ts",
+      "default": "./dist/octets.js"
+    },
+    "./equix.wasm": "./dist/equix.wasm",
+    "./empreinte.json": "./dist/empreinte.json",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "COPYING",
+    "README.md"
+  ],
+  "packageManager": "bun@1.4.0",
+  "scripts": {
+    "build:wasm": "bun scripts/construire-wasm.ts",
+    "build:ts": "bun build src/index.ts --outdir dist --target browser --format esm && bun --bun tsc -p tsconfig.build.json",
+    "build": "bun run build:wasm && bun run build:ts",
+    "build:demo": "bun scripts/construire-demo.ts",
+    "demo": "bun run build && bun run build:demo && bun scripts/servir-demo.ts",
+    "test:rust": "cargo test --locked",
+    "test": "bun test",
+    "typecheck": "bun --bun tsc --noEmit",
+    "verify:reproductible": "bun scripts/verifier-reproductibilite.ts",
+    "check": "bun run test:rust && bun run build && bun run typecheck && bun run test && bun run build:demo && bun run verify:reproductible",
+    "prepublishOnly": "bun run check"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.0",
+    "typescript": "^5.9.0"
+  }
+}

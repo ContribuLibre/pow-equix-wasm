@@ -1,0 +1,23 @@
+# Tests Rust et TypeScript, construction du paquet et de la démo, puis contrôle
+# que le module WebAssembly se reproduit à l’octet près.
+name: Vérification
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verifier:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      # rustup lit rust-toolchain.toml et installe la version figée, cible wasm comprise.
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - run: bun install --frozen-lockfile
+      - run: bun run check
+      - name: Empreinte du module
+        run: cat dist/empreinte.json >> "$GITHUB_STEP_SUMMARY"

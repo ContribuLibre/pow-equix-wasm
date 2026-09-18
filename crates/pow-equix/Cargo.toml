@@ -1,0 +1,21 @@
+[package]
+name = "pow-equix"
+description = "Preuve de travail Equi-X liée à une graine : défi, résolution par parts et vérification"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[features]
+default = ["solveur"]
+# Résolution. Sans elle, la crate ne sait que vérifier.
+solveur = []
+# Génère du code machine pour HashX (x86_64, aarch64) : à activer en natif
+# (application Tauri). Jamais en WebAssembly, où seul l’interpréteur existe.
+compilateur = ["equix/compiler"]
+
+[dependencies]
+equix = { version = "=0.7.1", default-features = false }
+blake2 = "0.10.6"

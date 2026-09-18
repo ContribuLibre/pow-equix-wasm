@@ -1,0 +1,6 @@
+# Version de Rust figée : à sources et versions égales, le module WebAssembly
+# produit est identique à l’octet près (voir scripts/construire-wasm.ts).
+[toolchain]
+channel = "1.93.1"
+targets = ["wasm32-unknown-unknown"]
+profile = "minimal"

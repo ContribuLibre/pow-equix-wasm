@@ -1,0 +1,31 @@
+:root { color-scheme: light dark; --fond: #f7f8f6; --surface: #fff; --texte: #1d2521; --discret: #5b665f; --bord: #d3dad5; --accent: #0b7558; --alerte: #b3261e; }
+@media (prefers-color-scheme: dark) { :root { --fond: #151a17; --surface: #1d2420; --texte: #e8ede9; --discret: #a3aea6; --bord: #3a463f; --accent: #67d5ad; --alerte: #ff8a80; } }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--fond); color: var(--texte); font: 16px/1.55 system-ui, sans-serif; }
+main { max-width: 52rem; margin: 0 auto; padding: 1.5rem 1rem 4rem; }
+h1 { margin: 0 0 .5rem; color: var(--accent); }
+h2 { margin: 0 0 .8rem; font-size: 1.2rem; }
+h3 { margin: 1.2rem 0 .5rem; font-size: 1rem; }
+section { margin-top: 1.2rem; padding: 1.2rem; border: 1px solid var(--bord); border-radius: .9rem; background: var(--surface); }
+a { color: var(--accent); }
+.liens { color: var(--discret); }
+.grille { display: grid; grid-template-columns: max-content 1fr; gap: .35rem 1rem; margin: 0; }
+.grille dt { color: var(--discret); }
+.grille dd { margin: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+form { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: 1rem; }
+label { display: grid; gap: .3rem; font-weight: 600; }
+label small { color: var(--discret); font-weight: 400; }
+input, textarea { width: 100%; padding: .55rem .65rem; border: 1px solid var(--bord); border-radius: .55rem; background: var(--fond); color: inherit; font: inherit; }
+textarea { font: 13px/1.4 ui-monospace, monospace; }
+.estimation, .actions { grid-column: 1 / -1; margin: 0; }
+.estimation { color: var(--discret); }
+.actions { display: flex; flex-wrap: wrap; gap: .6rem; margin-top: .6rem; }
+button { min-height: 2.6rem; padding: .5rem 1.1rem; border: 1px solid var(--accent); border-radius: .6rem; background: var(--accent); color: var(--surface); font: inherit; font-weight: 700; cursor: pointer; }
+button[type="button"] { background: transparent; color: var(--accent); }
+button:disabled { opacity: .55; cursor: wait; }
+progress { width: 100%; height: .8rem; accent-color: var(--accent); }
+.alerte { color: var(--alerte); font-weight: 600; }
+.defilement { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th, td { padding: .4rem .6rem; border-bottom: 1px solid var(--bord); text-align: end; }
+th:first-child, td:first-child { text-align: start; }

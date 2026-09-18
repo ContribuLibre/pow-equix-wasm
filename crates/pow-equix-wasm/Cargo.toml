@@ -1,0 +1,15 @@
+[package]
+name = "pow-equix-wasm"
+description = "Interface WebAssembly minimale de pow-equix : un seul module qui résout et vérifie"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+pow-equix = { path = "../pow-equix" }
