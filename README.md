@@ -249,16 +249,64 @@ const { parts } = await resoudre({
 envoyer({ ...requete, preuve: hexadecimal(parts) })
 ```
 
-`resoudre` répartit les compteurs entre des Web Workers créés depuis un Blob
-(aucun fichier supplémentaire à publier) : par défaut un par cœur annoncé, huit
-au plus, et jamais plus que d’essais attendus (`filsConseilles`). Si les Web
-Workers sont refusés, le calcul continue sur le fil courant. `fils: 0` force ce
-mode. La progression donne le moteur, le mode (compilé ou interprété), n, les
-essais, les parts trouvées, le temps écoulé, une estimation du temps restant
-mesurée sur l’appareil et la mémoire réelle des modules. L’annulation, la
-progression et les Web Workers fonctionnent dans les deux modes ; si la
-compilation d’un programme échoue, l’interprète termine l’essai et prend le
-relais (`resultat.compilation` vaut alors `false`).
+`resoudre` confie les compteurs à des Web Workers créés depuis un Blob (aucun
+fichier supplémentaire à publier) : le fil principal les distribue un par un,
+chaque résultat valant demande du suivant, si bien que des fils peuvent
+s’ajouter en cours de calcul sans trou ni doublon. Par défaut, un fil par cœur
+annoncé, huit au plus, et jamais plus que d’essais attendus (`filsConseilles`).
+Si les Web Workers sont refusés, le calcul continue sur le fil courant.
+`fils: 0` force ce mode. La progression donne le moteur, le mode (compilé ou
+interprété), n, les Web Workers actifs (`filsActifs`), les essais, les parts
+trouvées, le temps écoulé, une estimation du temps restant mesurée sur
+l’appareil et la mémoire réelle des modules. L’annulation, la progression et
+les Web Workers fonctionnent dans les deux modes ; si la compilation d’un
+programme échoue, l’interprète termine l’essai et prend le relais
+(`resultat.compilation` vaut alors `false`).
+
+#### Nombre de fils adaptatif (recommandé pour le web grand public)
+
+Sur un téléphone, trop de Web Workers × la mémoire de chacun peut faire tuer
+l’onglet, sans erreur que la page puisse rattraper, et
+`navigator.deviceMemory` n’existe que dans Chromium. `fils` accepte donc aussi
+une **politique** : une fonction appelée au départ puis après chaque essai
+terminé, avec `{ essaisTermines, dureePremierEssaiMs, dureeMoyenneEssaiMs,
+filsActifs, n, execution }`, qui renvoie le nombre de fils voulu. Seule une
+hausse est appliquée (aucun fil n’est arrêté en plein essai), jamais au-delà
+des essais restants attendus ; si la création d’un fil supplémentaire échoue
+(exception, mémoire, Web Worker en erreur avant tout résultat), le calcul
+continue avec les fils existants, le compteur confié est redistribué, et plus
+aucun fil n’est créé.
+
+```ts
+import { filsAdaptatifs, resoudre } from 'pow-equix-wasm'
+
+const { parts, fils } = await resoudre({
+  octets, graine, effort: 1, nombre: 4,
+  fils: filsAdaptatifs(),  // 1 fil, puis jusqu’à 8 si l’appareil semble costaud
+  chargerJs: () => import('pow-equix-wasm/js'),
+  onProgression: ({ filsActifs }) => { /* 1 → 2 → 4… */ },
+})
+// `fils` : le plus grand nombre de Web Workers en service à la fois.
+```
+
+`filsAdaptatifs(options?)` décide ainsi (seuils dans `SEUILS_FILS_ADAPTATIFS`,
+chacun surchargeable par les options, comme `memoireAppareilGo`, `coeurs` et
+`ecranPx` pour simuler un profil) :
+
+| Situation | Fils |
+|---|---|
+| `navigator.deviceMemory` connu | d’emblée `floor(Go × 1024 × partMemoire / Mio par fil)` (`partMemoire` = 1/32), au moins 1 |
+| sinon, avant le premier essai | 1 |
+| r > 2,5 (lent) ou écran < 1 280 px physiques | 1 |
+| r < 1,3 (rapide) et écran ≥ 1 920 px physiques | jusqu’à 8 |
+| entre les deux | 2 si r > 2, sinon 4 (écran inconnu : compté comme moyen) |
+
+r est la durée moyenne mesurée d’un essai divisée par la durée de référence
+pour ce n et cette exécution (`msParEssai`) ; l’écran est son plus grand côté
+× `devicePixelRatio`. Toujours au plus 8 et le nombre de cœurs. Le défaut
+reste le nombre fixe de `filsConseilles`, pour la compatibilité.
+`travailleurEquix` est la fabrique de Web Worker employée par défaut, à
+réutiliser pour les envelopper (`creerTravailleur`).
 
 Politique de sécurité du contenu : `script-src 'self' 'wasm-unsafe-eval'`
 suffit (aucun `eval`) ; les Web Workers viennent d’un Blob, donc `worker-src blob:`
