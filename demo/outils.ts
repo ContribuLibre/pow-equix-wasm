@@ -125,7 +125,8 @@ export function descriptionAppareil(agent: string): string {
   return `${navigateur}-${systeme}`
 }
 
-function horodatage(date: Date): string {
+/** Date locale pour un nom de fichier : 2026-09-19_14h05. */
+export function horodatage(date: Date): string {
   const deux = (valeur: number): string => String(valeur).padStart(2, '0')
   return `${date.getFullYear()}-${deux(date.getMonth() + 1)}-${deux(date.getDate())}_${deux(date.getHours())}h${deux(date.getMinutes())}`
 }

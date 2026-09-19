@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="{{langue}}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{titre}}</title>
+  <meta name="description" content="{{description}}">
+  <link rel="alternate" hreflang="{{autreCode}}" href="../../{{autreCode}}/banc/">
+  <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+  <main>
+    <header>
+      <h1>{{titreCourt}}</h1>
+      <p>{{intro}}</p>
+      <p class="liens"><a href="../">{{retourDemo}}</a> · <a href="https://github.com/ContribuLibre/pow-equix-wasm">GitHub</a> · <a id="autre-langue" href="../../{{autreCode}}/banc/" hreflang="{{autreCode}}" lang="{{autreCode}}" title="{{autreLangueTitre}}">{{autreLangue}}</a></p>
+    </header>
+
+    <section aria-labelledby="titre-fiche">
+      <h2 id="titre-fiche">{{fiche}}</h2>
+      <p class="discret">{{ficheAide}}</p>
+      <dl id="detecte" class="grille"></dl>
+      <form id="fiche" class="fiche">
+        <label>{{modele}} <input name="modele" placeholder="{{modeleExemple}}"></label>
+        <label>{{processeur}} <input name="processeur" placeholder="{{processeurExemple}}"></label>
+        <label>{{gpu}} <input name="gpu" placeholder="{{gpuExemple}}"></label>
+        <label>{{ram}} <input name="ram" placeholder="{{ramExemple}}"></label>
+        <label>{{remarques}} <input name="remarques" placeholder="{{remarquesExemple}}"></label>
+      </form>
+    </section>
+
+    <section aria-labelledby="titre-scenarios">
+      <h2 id="titre-scenarios">{{scenarios}}</h2>
+      <p class="alerte">{{provisoire}}</p>
+      <p class="discret">{{scenariosAide}}</p>
+      <textarea id="scenarios" rows="14" spellcheck="false"></textarea>
+      <p id="message-scenarios" class="message" role="status" aria-live="polite"></p>
+      <div class="actions">
+        <button id="importer-scenarios" type="button">{{importerScenarios}}</button>
+        <button id="exporter-scenarios" type="button">{{exporterScenarios}}</button>
+        <button id="reinitialiser" type="button">{{reinitialiser}}</button>
+        <input id="fichier-scenarios" type="file" accept="application/json,.json" hidden>
+      </div>
+      <div class="defilement"><table><thead id="entete-scenarios"></thead><tbody id="lignes-scenarios"></tbody></table></div>
+    </section>
+
+    <section aria-labelledby="titre-estimation">
+      <h2 id="titre-estimation">{{estimation}}</h2>
+      <p class="discret">{{estimationAide}}</p>
+      <label class="case"><input id="rapide" type="checkbox"> {{rapide}}</label>
+      <p id="estimation"></p>
+      <div class="actions">
+        <button id="calibrer" type="button">{{calibrer}}</button>
+        <button id="lancer" type="button">{{lancer}}</button>
+        <button id="annuler" type="button" hidden>{{annuler}}</button>
+      </div>
+    </section>
+
+    <section aria-labelledby="titre-progression" id="bloc-progression" hidden>
+      <h2 id="titre-progression">{{progression}}</h2>
+      <p id="etat" role="status" aria-live="polite"></p>
+      <progress id="barre" max="1" value="0"></progress>
+      <p id="temps" class="discret"></p>
+    </section>
+
+    <section aria-labelledby="titre-resultats" id="bloc-resultats" hidden>
+      <h2 id="titre-resultats">{{resultats}}</h2>
+      <p id="avertissement-rapide" class="alerte" hidden></p>
+      <div class="defilement"><table><thead id="entete-resultats"></thead><tbody id="lignes-resultats"></tbody></table></div>
+      <h3>{{verification}}</h3>
+      <p class="discret">{{verificationAide}}</p>
+      <div class="defilement"><table><thead id="entete-verification"></thead><tbody id="lignes-verification"></tbody></table></div>
+      <h3>{{exporter}}</h3>
+      <p>{{exporterAide}}</p>
+      <textarea id="export" rows="8" readonly></textarea>
+      <div class="actions"><button id="telecharger" type="button">{{telecharger}}</button></div>
+    </section>
+  </main>
+  <script type="module" src="../../banc.js"></script>
+</body>
+</html>

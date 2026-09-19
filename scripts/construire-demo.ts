@@ -4,12 +4,17 @@
 //                       (liens visibles si le script ne tourne pas) ;
 //   site/fr/, site/en/  la même page, textes tirés de demo/textes.ts ;
 //   site/demo.js        son script (et le moteur JavaScript en morceau à part),
+//   site/fr/banc/, site/en/banc/  le banc comparatif (SHA-256, Argon2id, Equi-X),
+//   site/banc.js, site/banc-travailleur.js  son script et son Web Worker,
 //   site/style.css, site/equix.wasm.
+//
+// Le banc ne sert qu’à la démo : rien n’en entre dans dist/ ni dans le paquet.
 //
 //   bun scripts/construire-demo.ts   (après bun run build)
 
 import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
+import { TEXTES_BANC } from '../demo/banc/textes.ts'
 import { LANGUES, TEXTES } from '../demo/textes.ts'
 
 const racine = resolve(import.meta.dirname, '..')
@@ -23,17 +28,28 @@ if (!resultat.success) {
   throw new Error('La construction de la démo a échoué')
 }
 
-const modele = await readFile(resolve(racine, 'demo/modele.html'), 'utf8')
-for (const langue of LANGUES) {
-  const autre = LANGUES.find((code) => code !== langue)!
-  const valeurs: Record<string, string> = { ...TEXTES[langue].page, langue, autreCode: autre }
-  const page = modele.replace(/\{\{(\w+)\}\}/g, (_, cle: string) => {
+// Page du banc et son Web Worker (module autonome, hash-wasm compris).
+for (const [entree, nom, decoupage] of [['demo/banc/page.ts', 'banc.js', true], ['demo/banc/travailleur.ts', 'banc-travailleur.js', false]] as const) {
+  const banc = await Bun.build({ entrypoints: [resolve(racine, entree)], outdir: site, target: 'browser', format: 'esm', minify: true, splitting: decoupage, naming: { entry: nom, chunk: 'banc-[name]-[hash].[ext]' } })
+  if (!banc.success) {
+    for (const message of banc.logs) console.error(message)
+    throw new Error(`La construction de ${nom} a échoué`)
+  }
+}
+
+async function remplirModele(chemin: string, valeurs: Record<string, string>, langue: string): Promise<string> {
+  return (await readFile(resolve(racine, chemin), 'utf8')).replace(/\{\{(\w+)\}\}/g, (_, cle: string) => {
     const valeur = valeurs[cle]
-    if (valeur === undefined) throw new Error(`Texte absent pour « ${cle} » (${langue})`)
+    if (valeur === undefined) throw new Error(`Texte absent pour « ${cle} » (${langue}, ${chemin})`)
     return valeur
   })
-  await mkdir(resolve(site, langue), { recursive: true })
-  await writeFile(resolve(site, langue, 'index.html'), page)
+}
+
+for (const langue of LANGUES) {
+  const autre = LANGUES.find((code) => code !== langue)!
+  await mkdir(resolve(site, langue, 'banc'), { recursive: true })
+  await writeFile(resolve(site, langue, 'index.html'), await remplirModele('demo/modele.html', { ...TEXTES[langue].page, langue, autreCode: autre }, langue))
+  await writeFile(resolve(site, langue, 'banc', 'index.html'), await remplirModele('demo/banc/modele.html', { ...TEXTES_BANC[langue].page, langue, autreCode: autre }, langue))
 }
 
 // Accueil : même règle que langueNavigateur (demo/outils.ts) ; les réglages de l’adresse suivent.
@@ -65,4 +81,4 @@ await writeFile(resolve(site, 'index.html'), `<!doctype html>
 `)
 await copyFile(resolve(racine, 'demo/style.css'), resolve(site, 'style.css'))
 await copyFile(resolve(racine, 'dist/equix.wasm'), resolve(site, 'equix.wasm'))
-console.log('✓ démo construite dans site/ (fr, en)')
+console.log('✓ démo et banc construits dans site/ (fr, en)')
