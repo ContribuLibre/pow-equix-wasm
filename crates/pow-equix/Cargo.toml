@@ -1,6 +1,6 @@
 [package]
 name = "pow-equix"
-description = "Preuve de travail Equi-X liée à une graine : défi, résolution par parts et vérification"
+description = "Preuve de travail Equi-X liée à une graine, à mémoire réglable (Equihash(n, 3) sur HashX) : défi, résolution par parts et vérification"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,9 +13,19 @@ default = ["solveur"]
 # Résolution. Sans elle, la crate ne sait que vérifier.
 solveur = []
 # Génère du code machine pour HashX (x86_64, aarch64) : à activer en natif
-# (application Tauri). Jamais en WebAssembly, où seul l’interpréteur existe.
-compilateur = ["equix/compiler"]
+# (application Tauri). Jamais dans le module WebAssembly, où le programme est
+# interprété, ou compilé en WebAssembly par le chargeur JavaScript.
+compilateur = ["hashx/compiler"]
 
 [dependencies]
-equix = { version = "=0.7.1", default-features = false }
+# Copie de hashx 0.9.1 qui expose le programme généré (crates/hashx).
+hashx = { package = "pow-hashx", path = "../hashx" }
 blake2 = "0.10.6"
+
+[dev-dependencies]
+# Références pour les tests d’équivalence : Equi-X et HashX d’Arti, tels que publiés.
+# Les tests compilent HashX en code machine (bien plus rapide que l’interprète) :
+# l’équivalence du programme interprété est vérifiée à part, entrée par entrée.
+equix = { version = "=0.7.1", default-features = false, features = ["compiler"] }
+hashx = { package = "pow-hashx", path = "../hashx", features = ["compiler"] }
+hashx-arti = { package = "hashx", version = "=0.9.1", default-features = false }

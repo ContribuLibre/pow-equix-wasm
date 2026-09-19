@@ -184,6 +184,8 @@ version = "0.2.1"
 dependencies = [
  "blake2",
  "equix",
+ "hashx",
+ "pow-hashx",
 ]
 
 [[package]]
