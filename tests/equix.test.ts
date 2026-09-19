@@ -6,12 +6,14 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import {
-  GRAINE_MAX, ModuleEquix, TAILLE_PART, construireGraine, depuisHexadecimal, essaisAttendus, hexadecimal, probabiliteEssai, resoudre,
+  GRAINE_MAX, ModuleEquix, REFERENCE_MS_PAR_ESSAI, TAILLE_PART, construireGraine, depuisHexadecimal, essaisAttendus, estimerDuree, hexadecimal,
+  moteurRetenu, probabiliteEssai, ralentissement, resoudre, webAssemblyDisponible,
 } from '../dist/index.js'
+import { creerExportsEquixJs } from '../dist/equix-js.js'
 import { SHA256_EQUIX, octetsEquix } from '../dist/octets.js'
 
 const octets = new Uint8Array(readFileSync(resolve(import.meta.dir, '../dist/equix.wasm')))
-const empreinte = JSON.parse(readFileSync(resolve(import.meta.dir, '../dist/empreinte.json'), 'utf8')) as { sha256: string; octets: number }
+const empreinte = JSON.parse(readFileSync(resolve(import.meta.dir, '../dist/empreinte.json'), 'utf8')) as { sha256: string; octets: number; js: { sha256: string; octets: number } }
 const graine = await construireGraine('pow-equix-wasm/test', '{"message":"bonjour"}')
 
 describe('module publié', () => {
@@ -21,6 +23,9 @@ describe('module publié', () => {
     expect(empreinte.octets).toBe(octets.length)
     expect(SHA256_EQUIX).toBe(sha)
     expect(octetsEquix()).toEqual(octets)
+    const js = readFileSync(resolve(import.meta.dir, '../dist/equix-js.js'))
+    expect(empreinte.js.sha256).toBe(createHash('sha256').update(js).digest('hex'))
+    expect(empreinte.js.octets).toBe(js.length)
   })
 
   test('refuse un module qui n’est pas celui d’Equi-X', async () => {
@@ -98,4 +103,54 @@ describe('outils', () => {
     expect(depuisHexadecimal('abc')).toBeNull()
     expect(depuisHexadecimal('zz')).toBeNull()
   })
+})
+
+describe('moteur JavaScript (sans WebAssembly)', () => {
+  test('donne exactement les mêmes solutions que WebAssembly, essai par essai', async () => {
+    const wasm = await ModuleEquix.instancier(octets)
+    const js = ModuleEquix.depuisJs(creerExportsEquixJs)
+    expect(js.moteur).toBe('js')
+    for (const compteur of [0, 1, 7]) expect(js.essayer(graine, compteur, 1)).toEqual(wasm.essayer(graine, compteur, 1))
+  }, 60_000)
+
+  test('une preuve résolue en JavaScript se vérifie en WebAssembly, et l’inverse', async () => {
+    const parJs = await resoudre({ js: creerExportsEquixJs, moteur: 'js', graine, effort: 1, nombre: 1, fils: 0 })
+    expect(parJs.moteur).toBe('js')
+    expect((await ModuleEquix.instancier(octets)).verifier(graine, parJs.parts, 1, 1)).toBe(true)
+    const parWasm = await resoudre({ octets, graine, effort: 1, nombre: 2, fils: 0 })
+    expect(ModuleEquix.depuisJs(creerExportsEquixJs).verifier(graine, parWasm.parts, 1, 2)).toBe(true)
+  }, 60_000)
+
+  test('tourne aussi dans un Web Worker, par la source de creerExportsEquixJs', async () => {
+    const resultat = await resoudre({ js: creerExportsEquixJs, moteur: 'js', graine, effort: 1, nombre: 1, fils: 1 })
+    expect(resultat.moteur).toBe('js')
+    expect(resultat.fils).toBe(1)
+    expect((await ModuleEquix.instancier(octets)).verifier(graine, resultat.parts, 1, 1)).toBe(true)
+  }, 60_000)
+
+  test('choisit WebAssembly quand il est là, JavaScript sinon, et refuse sans moteur', async () => {
+    expect(webAssemblyDisponible()).toBe(true)
+    expect(moteurRetenu({ octets, js: creerExportsEquixJs })).toBe('wasm')
+    expect(moteurRetenu({ js: creerExportsEquixJs })).toBe('js')
+    expect(moteurRetenu({ octets, moteur: 'js' })).toBeNull()
+    await expect(resoudre({ graine, effort: 1, nombre: 1 })).rejects.toThrow('Aucun moteur Equi-X fourni')
+  })
+
+  test('estime la durée et le ralentissement d’après les mesures de référence', () => {
+    expect(ralentissement('wasm')).toBe(1)
+    expect(ralentissement('jsSansJit')).toBeGreaterThan(100)
+    // 4 parts à l’effort 1 : un peu moins de 5 essais, répartis sur autant de fils.
+    const essais = essaisAttendus(1, 4)
+    expect(estimerDuree({ effort: 1, nombre: 4, execution: 'wasm', fils: 1 })).toBeCloseTo(essais * REFERENCE_MS_PAR_ESSAI.wasm)
+    expect(estimerDuree({ effort: 1, nombre: 4, execution: 'wasm', fils: 64 })).toBeCloseTo(REFERENCE_MS_PAR_ESSAI.wasm)
+  })
+
+  test('la progression donne le moteur, la durée et une estimation du temps restant', async () => {
+    const vues: Array<{ moteur: string; dureeMs: number; restantEstimeMs: number | null; parts: number }> = []
+    await resoudre({ octets, graine, effort: 1, nombre: 3, fils: 0, onProgression: (progression) => vues.push(progression) })
+    expect(vues.every((vue) => vue.moteur === 'wasm')).toBe(true)
+    expect(vues[0]!.restantEstimeMs).not.toBeNull()
+    expect(vues.at(-1)!.restantEstimeMs).toBe(0)
+    expect(vues.at(-1)!.dureeMs).toBeGreaterThan(0)
+  }, 60_000)
 })

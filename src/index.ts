@@ -1,11 +1,17 @@
 /**
  * pow-equix-wasm : preuve de travail Equi-X pour le web.
  *
- * Un seul module WebAssembly résout (navigateur, Web Workers) et vérifie
- * (serveur Bun, Node ou Deno). Ce fichier ne dépend ni du DOM ni d’un
- * bundler : chaque environnement fournit les octets du module comme il peut
- * (`fetch` de `pow-equix-wasm/equix.wasm`, lecture de fichier, ou
- * `pow-equix-wasm/octets` qui les intègre en base64).
+ * Un seul module résout (navigateur, Web Workers) et vérifie (serveur Bun,
+ * Node ou Deno). Il existe en deux moteurs aux résultats identiques :
+ *
+ * - `wasm` : `equix.wasm`, à fournir en octets (`fetch` de
+ *   `pow-equix-wasm/equix.wasm`, lecture de fichier, ou `pow-equix-wasm/octets`
+ *   qui l’intègre en base64) ;
+ * - `js` : le même module traduit en JavaScript pur par wasm2js
+ *   (`pow-equix-wasm/js`), pour les navigateurs où WebAssembly est désactivé.
+ *   Environ 4 à 9 fois plus lent avec JIT, et près de 200 fois sans JIT.
+ *
+ * Ce fichier ne dépend ni du DOM ni d’un bundler.
  *
  * Protocole : le défi d’un essai est `graine ‖ compteur` (u32 petit-boutiste).
  * Une preuve réunit `nombre` parts de 20 octets, `compteur ‖ solution Equi-X`,
@@ -21,8 +27,11 @@ export const PARTS_MAX = 64
 /** Au-delà, l’effort n’a plus de sens : une chance sur 2³² par solution. */
 export const EFFORT_MAX = 2 ** 32 - 1
 
-interface ExportsEquix {
-  memory: WebAssembly.Memory
+export type Moteur = 'wasm' | 'js'
+
+/** Exports du module, qu’il vienne de equix.wasm ou de sa traduction JavaScript. */
+export interface ExportsEquix {
+  memory: { buffer: ArrayBuffer }
   tampon_adresse(): number
   tampon_taille(): number
   graine_max(): number
@@ -31,9 +40,21 @@ interface ExportsEquix {
   essayer(longueurGraine: number, effort: number, compteur: number): number
 }
 
-function exportsValides(exports: WebAssembly.Exports): exports is WebAssembly.Exports & ExportsEquix {
-  return exports.memory instanceof WebAssembly.Memory
-    && ['tampon_adresse', 'tampon_taille', 'graine_max', 'version_format', 'verifier', 'essayer'].every((nom) => typeof exports[nom] === 'function')
+/** Fabrique du moteur JavaScript : `creerExportsEquixJs` de `pow-equix-wasm/js`. */
+export type CreateurEquixJs = () => ExportsEquix
+
+function exportsValides(exports: unknown): exports is ExportsEquix {
+  const candidat = exports as Record<string, unknown> | null
+  return typeof candidat === 'object' && candidat !== null
+    && (candidat.memory as { buffer?: unknown } | undefined)?.buffer instanceof ArrayBuffer
+    && ['tampon_adresse', 'tampon_taille', 'graine_max', 'version_format', 'verifier', 'essayer'].every((nom) => typeof candidat[nom] === 'function')
+}
+
+function controler(exports: unknown): ExportsEquix {
+  if (!exportsValides(exports)) throw new Error('Module Equi-X invalide.')
+  if (exports.version_format() !== VERSION_FORMAT) throw new Error('Module Equi-X d’une autre version du format.')
+  if (exports.graine_max() !== GRAINE_MAX) throw new Error('Module Equi-X incompatible avec ce chargeur.')
+  return exports
 }
 
 export function effortValide(effort: number): boolean {
@@ -48,17 +69,34 @@ function graineValide(graine: Uint8Array): boolean {
   return graine.length >= 1 && graine.length <= GRAINE_MAX
 }
 
+/**
+ * WebAssembly est-il utilisable ici ? Faux quand le navigateur l’a désactivé
+ * (Tor Browser en mode renforcé, mode Isolement d’iOS, politique d’entreprise…),
+ * ce qui s’accompagne en général d’un JavaScript sans JIT, donc très lent.
+ */
+export function webAssemblyDisponible(): boolean {
+  try {
+    // Le plus petit module valide : en-tête et version, sans section.
+    return typeof WebAssembly === 'object' && new WebAssembly.Module(new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0])) instanceof WebAssembly.Module
+  } catch {
+    return false
+  }
+}
+
 /** Un module Equi-X instancié. Une instance n’est pas réentrante : un appel à la fois. */
 export class ModuleEquix {
-  private constructor(private readonly exports: ExportsEquix) {}
+  private constructor(private readonly exports: ExportsEquix, readonly moteur: Moteur) {}
 
+  /** Moteur WebAssembly, depuis les octets de equix.wasm. */
   static async instancier(source: BufferSource | WebAssembly.Module): Promise<ModuleEquix> {
     const module = source instanceof WebAssembly.Module ? source : await WebAssembly.compile(source)
     const instance = await WebAssembly.instantiate(module, {})
-    if (!exportsValides(instance.exports)) throw new Error('Module Equi-X invalide.')
-    if (instance.exports.version_format() !== VERSION_FORMAT) throw new Error('Module Equi-X d’une autre version du format.')
-    if (instance.exports.graine_max() !== GRAINE_MAX) throw new Error('Module Equi-X incompatible avec ce chargeur.')
-    return new ModuleEquix(instance.exports)
+    return new ModuleEquix(controler(instance.exports), 'wasm')
+  }
+
+  /** Moteur JavaScript, depuis `creerExportsEquixJs` de `pow-equix-wasm/js`. */
+  static depuisJs(creer: CreateurEquixJs): ModuleEquix {
+    return new ModuleEquix(controler(creer()), 'js')
   }
 
   /** Mémoire linéaire actuellement réservée par le module, en octets. */
@@ -71,7 +109,7 @@ export class ModuleEquix {
     return new Uint8Array(this.exports.memory.buffer, this.exports.tampon_adresse(), this.exports.tampon_taille())
   }
 
-  /** Vérifie une preuve complète ; quelques centaines de microsecondes par part. */
+  /** Vérifie une preuve complète : quelques centaines de microsecondes par part en WebAssembly. */
   verifier(graine: Uint8Array, parts: Uint8Array, effort: number, nombre: number): boolean {
     if (!graineValide(graine) || !nombreValide(nombre) || !effortValide(effort) || parts.length !== nombre * TAILLE_PART) return false
     const tampon = this.tampon()
@@ -122,6 +160,48 @@ export function essaisAttendus(effort: number, nombre: number): number {
   return nombre / probabiliteEssai(effort)
 }
 
+/**
+ * Durée d’un essai sur un cœur, mesurée sur un portable x86-64 récent. Ordres de
+ * grandeur pour décider avant de calculer ; pendant le calcul, la progression
+ * donne une estimation mesurée sur l’appareil lui-même.
+ */
+export const REFERENCE_MS_PAR_ESSAI = {
+  /** WebAssembly, Chromium comme Bun ou Node. */
+  wasm: 410,
+  /** JavaScript traduit, avec JIT : 3,8 s dans Chromium (1,5 s sous Node). */
+  js: 3_800,
+  /** JavaScript traduit, sans JIT (Node --jitless) : le cas courant quand WebAssembly est désactivé. */
+  jsSansJit: 79_000,
+} as const
+
+export type Execution = keyof typeof REFERENCE_MS_PAR_ESSAI
+
+/** Nombre de fils par défaut : un par cœur annoncé, huit au plus. */
+export function filsParDefaut(): number {
+  const coeurs = typeof navigator !== 'undefined' && Number.isInteger(navigator.hardwareConcurrency) ? navigator.hardwareConcurrency : 1
+  return Math.max(1, Math.min(8, coeurs))
+}
+
+/** Fils utilisés par défaut : pas plus que d’essais attendus, un fil de trop ne ferait que disputer le processeur. */
+export function filsConseilles(effort: number, nombre: number): number {
+  return Math.min(filsParDefaut(), Math.ceil(essaisAttendus(effort, nombre)))
+}
+
+/**
+ * Durée probable d’une preuve, en millisecondes, d’après les mesures de référence :
+ * de quoi prévenir d’une longue attente avant même de commencer.
+ */
+export function estimerDuree(options: { effort: number; nombre: number; execution: Execution; fils?: number }): number {
+  const essais = essaisAttendus(options.effort, options.nombre)
+  const fils = Math.max(1, Math.min(options.fils ?? filsConseilles(options.effort, options.nombre), essais))
+  return essais * REFERENCE_MS_PAR_ESSAI[options.execution] / fils
+}
+
+/** Combien de fois le moteur WebAssembly irait plus vite que cette exécution. */
+export function ralentissement(execution: Execution): number {
+  return REFERENCE_MS_PAR_ESSAI[execution] / REFERENCE_MS_PAR_ESSAI.wasm
+}
+
 export function hexadecimal(octets: Uint8Array): string {
   return Array.from(octets, (octet) => octet.toString(16).padStart(2, '0')).join('')
 }
@@ -134,53 +214,81 @@ export function depuisHexadecimal(texte: string): Uint8Array | null {
 }
 
 export interface Progression {
+  /** Moteur en cours d’usage. */
+  moteur: Moteur
   /** Essais cumulés, tous fils confondus. */
   essais: number
   /** Parts trouvées, au plus `nombre`. */
   parts: number
-  /** Mémoire WebAssembly cumulée des fils en cours, en octets. */
+  /** Temps écoulé depuis le début du calcul, en millisecondes. */
+  dureeMs: number
+  /** Temps restant estimé d’après le rythme mesuré, ou null tant qu’aucun essai n’est fini. */
+  restantEstimeMs: number | null
+  /** Mémoire du module cumulée sur les fils en cours, en octets. */
   memoireOctets: number
 }
 
 export interface OptionsResolution {
-  /** Octets du module, transmis tels quels aux Web Workers. */
-  octets: Uint8Array
   graine: Uint8Array
   effort: number
   nombre: number
+  /** Octets de equix.wasm, pour le moteur WebAssembly. */
+  octets?: Uint8Array
+  /** `creerExportsEquixJs` de `pow-equix-wasm/js`, pour le moteur JavaScript. */
+  js?: CreateurEquixJs
+  /**
+   * `auto` (par défaut) : WebAssembly s’il est disponible et fourni, sinon
+   * JavaScript s’il est fourni. `wasm` ou `js` imposent le moteur.
+   */
+  moteur?: Moteur | 'auto'
   onProgression?: (progression: Progression) => void
   signal?: AbortSignal
   /**
-   * Nombre de Web Workers ; par défaut un par cœur annoncé, huit au plus, et
-   * jamais plus que d’essais attendus : un fil sans essai à mener ne ferait que
-   * disputer le processeur aux autres. 0 force le calcul sur le fil courant.
+   * Nombre de Web Workers ; par défaut `filsConseilles` : un par cœur annoncé,
+   * huit au plus, jamais plus que d’essais attendus. 0 : fil courant.
    */
   fils?: number
   /** Fabrique de Web Worker, remplaçable (tests, politique de sécurité particulière). */
-  creerTravailleur?: () => Worker
+  creerTravailleur?: (moteur: Moteur, js?: CreateurEquixJs) => Worker
 }
 
 export interface Resolution {
   parts: Uint8Array
   essais: number
+  /** Moteur utilisé : `js` signale un mode dégradé. */
+  moteur: Moteur
   /** Nombre de fils effectivement utilisés ; 0 pour le fil courant. */
   fils: number
-  /** Mémoire WebAssembly maximale cumulée de tous les fils, en octets. */
+  dureeMs: number
+  /** Mémoire maximale du module cumulée sur tous les fils, en octets. */
   memoireOctets: number
+}
+
+/** Moteur que `resoudre` retiendra avec ces options, ou null s’il n’en a aucun. */
+export function moteurRetenu(options: Pick<OptionsResolution, 'octets' | 'js' | 'moteur'>): Moteur | null {
+  const choix = options.moteur ?? 'auto'
+  const wasm = Boolean(options.octets) && webAssemblyDisponible()
+  if (choix === 'wasm') return wasm ? 'wasm' : null
+  if (choix === 'js') return options.js ? 'js' : null
+  return wasm ? 'wasm' : options.js ? 'js' : null
 }
 
 /**
  * Corps du Web Worker. Il est sérialisé tel quel en Blob : il ne doit référencer
  * aucun identifiant extérieur, pour survivre à la minification et fonctionner
- * aussi depuis une page ouverte en file://.
+ * aussi depuis une page ouverte en file://. En moteur JavaScript, le Blob
+ * commence par la source de `creerExportsEquixJs`, rangée dans `self`.
  */
 function corpsTravailleur(): void {
-  const portee = self as unknown as { onmessage: ((evenement: MessageEvent) => void) | null; postMessage(message: unknown): void }
+  interface ExportsTravailleur { memory: { buffer: ArrayBuffer }; tampon_adresse(): number; essayer(longueur: number, effort: number, compteur: number): number }
+  const portee = self as unknown as { onmessage: ((evenement: MessageEvent) => void) | null; postMessage(message: unknown): void; creerExportsEquixJs?: () => ExportsTravailleur }
   portee.onmessage = async (evenement: MessageEvent) => {
-    const { octets, graine, effort, debut, pas, graineMax } = evenement.data as { octets: ArrayBuffer; graine: Uint8Array; effort: number; debut: number; pas: number; graineMax: number }
+    const { octets, graine, effort, debut, pas, graineMax } = evenement.data as { octets?: ArrayBuffer; graine: Uint8Array; effort: number; debut: number; pas: number; graineMax: number }
     try {
-      const { instance } = await WebAssembly.instantiate(octets, {})
-      const exports = instance.exports as unknown as { memory: WebAssembly.Memory; tampon_adresse(): number; essayer(longueur: number, effort: number, compteur: number): number }
+      let exports: ExportsTravailleur
+      if (octets) exports = (await WebAssembly.instantiate(octets, {})).instance.exports as unknown as ExportsTravailleur
+      else if (portee.creerExportsEquixJs) exports = portee.creerExportsEquixJs()
+      else throw new Error('Aucun moteur Equi-X dans ce Web Worker.')
       for (let compteur = debut; compteur <= 0xffff_ffff; compteur += pas) {
         new Uint8Array(exports.memory.buffer, exports.tampon_adresse(), graine.length).set(graine)
         const trouve = exports.essayer(graine.length, effort, compteur) === 1
@@ -194,21 +302,20 @@ function corpsTravailleur(): void {
   }
 }
 
-let urlTravailleur: string | undefined
+const urlsTravailleur = new Map<Moteur, string>()
 
-function travailleurParDefaut(): Worker {
-  urlTravailleur ??= URL.createObjectURL(new Blob([`(${corpsTravailleur.toString()})()`], { type: 'text/javascript' }))
-  return new Worker(urlTravailleur)
+function travailleurParDefaut(moteur: Moteur, js?: CreateurEquixJs): Worker {
+  let url = urlsTravailleur.get(moteur)
+  if (!url) {
+    const moteurJs = moteur === 'js' && js ? `self.creerExportsEquixJs = ${js.toString()};\n` : ''
+    url = URL.createObjectURL(new Blob([`${moteurJs}(${corpsTravailleur.toString()})()`], { type: 'text/javascript' }))
+    urlsTravailleur.set(moteur, url)
+  }
+  return new Worker(url)
 }
 
 function erreurAnnulation(signal: AbortSignal): unknown {
   return signal.reason ?? new DOMException('Calcul annulé.', 'AbortError')
-}
-
-/** Nombre de fils par défaut : un par cœur annoncé, huit au plus. */
-export function filsParDefaut(): number {
-  const coeurs = typeof navigator !== 'undefined' && Number.isInteger(navigator.hardwareConcurrency) ? navigator.hardwareConcurrency : 1
-  return Math.max(1, Math.min(8, coeurs))
 }
 
 function assembler(trouvees: Map<number, Uint8Array>, nombre: number): Uint8Array {
@@ -222,6 +329,12 @@ function assembler(trouvees: Map<number, Uint8Array>, nombre: number): Uint8Arra
   return parts
 }
 
+/** Temps restant estimé d’après le rythme mesuré, ou null avant le premier essai. */
+function restantEstime(essais: number, parts: number, nombre: number, effort: number, dureeMs: number): number | null {
+  if (essais === 0 || parts >= nombre) return essais === 0 ? null : 0
+  return (nombre - parts) / probabiliteEssai(effort) * (dureeMs / essais)
+}
+
 class ErreurTravailleur extends Error {}
 
 /**
@@ -232,44 +345,53 @@ class ErreurTravailleur extends Error {}
 export async function resoudre(options: OptionsResolution): Promise<Resolution> {
   const { graine, effort, nombre, signal } = options
   if (!graineValide(graine) || !effortValide(effort) || !nombreValide(nombre)) throw new Error('Paramètres de preuve invalides.')
+  const moteur = moteurRetenu(options)
+  if (!moteur) {
+    throw new Error(options.moteur === 'wasm' || (!options.js && options.octets)
+      ? 'WebAssembly est indisponible ici et aucun moteur JavaScript n’a été fourni.'
+      : 'Aucun moteur Equi-X fourni : il faut les octets de equix.wasm ou creerExportsEquixJs.')
+  }
   signal?.throwIfAborted()
-  const fils = options.fils === undefined ? Math.min(filsParDefaut(), Math.ceil(essaisAttendus(effort, nombre))) : Math.max(0, Math.floor(options.fils))
+  const fils = options.fils === undefined ? filsConseilles(effort, nombre) : Math.max(0, Math.floor(options.fils))
   const disponible = typeof Worker === 'function' && typeof Blob === 'function' && typeof URL.createObjectURL === 'function'
   const creer = options.creerTravailleur ?? (disponible ? travailleurParDefaut : undefined)
   if (fils > 0 && creer) {
     try {
-      return await resoudreEnParallele(options, creer, fils)
+      return await resoudreEnParallele(options, moteur, creer, fils)
     } catch (erreur) {
       if (signal?.aborted || !(erreur instanceof ErreurTravailleur)) throw erreur
       // Un navigateur peut refuser les Web Workers (file://, politique de sécurité) : repli local.
     }
   }
-  return resoudreSurCeFil(options)
+  return resoudreSurCeFil(options, moteur)
 }
 
-async function resoudreSurCeFil(options: OptionsResolution): Promise<Resolution> {
+async function resoudreSurCeFil(options: OptionsResolution, moteur: Moteur): Promise<Resolution> {
   const { graine, effort, nombre, signal, onProgression } = options
-  const module = await ModuleEquix.instancier(options.octets)
+  const module = moteur === 'wasm' ? await ModuleEquix.instancier(options.octets!) : ModuleEquix.depuisJs(options.js!)
   const trouvees = new Map<number, Uint8Array>()
+  const debut = performance.now()
   let essais = 0
   for (let compteur = 0; trouvees.size < nombre; compteur++) {
     signal?.throwIfAborted()
     const solution = module.essayer(graine, compteur, effort)
     essais++
     if (solution) trouvees.set(compteur, solution)
-    onProgression?.({ essais, parts: trouvees.size, memoireOctets: module.memoireOctets })
+    const dureeMs = performance.now() - debut
+    onProgression?.({ moteur, essais, parts: trouvees.size, dureeMs, restantEstimeMs: restantEstime(essais, trouvees.size, nombre, effort, dureeMs), memoireOctets: module.memoireOctets })
     if (trouvees.size < nombre) await new Promise<void>((resolve) => setTimeout(resolve, 0))
   }
   signal?.throwIfAborted()
-  return { parts: assembler(trouvees, nombre), essais, fils: 0, memoireOctets: module.memoireOctets }
+  return { parts: assembler(trouvees, nombre), essais, moteur, fils: 0, dureeMs: performance.now() - debut, memoireOctets: module.memoireOctets }
 }
 
-function resoudreEnParallele(options: OptionsResolution, creer: () => Worker, fils: number): Promise<Resolution> {
+function resoudreEnParallele(options: OptionsResolution, moteur: Moteur, creer: NonNullable<OptionsResolution['creerTravailleur']>, fils: number): Promise<Resolution> {
   const { graine, effort, nombre, signal, onProgression } = options
   return new Promise<Resolution>((resolve, reject) => {
     const travailleurs: Worker[] = []
     const memoires = new Map<number, number>()
     const trouvees = new Map<number, Uint8Array>()
+    const debut = performance.now()
     let essais = 0
     let memoireMax = 0
     let fini = false
@@ -291,7 +413,7 @@ function resoudreEnParallele(options: OptionsResolution, creer: () => Worker, fi
     signal?.addEventListener('abort', annuler, { once: true })
     try {
       for (let index = 0; index < fils; index++) {
-        const travailleur = creer()
+        const travailleur = creer(moteur, options.js)
         travailleurs.push(travailleur)
         travailleur.onerror = (evenement) => {
           evenement.preventDefault?.()
@@ -306,13 +428,16 @@ function resoudreEnParallele(options: OptionsResolution, creer: () => Worker, fi
           const memoire = [...memoires.values()].reduce((somme, valeur) => somme + valeur, 0)
           memoireMax = Math.max(memoireMax, memoire)
           if (message.solution && message.compteur !== undefined) trouvees.set(message.compteur, message.solution)
-          onProgression?.({ essais, parts: Math.min(trouvees.size, nombre), memoireOctets: memoire })
+          const parts = Math.min(trouvees.size, nombre)
+          const dureeMs = performance.now() - debut
+          onProgression?.({ moteur, essais, parts, dureeMs, restantEstimeMs: restantEstime(essais, parts, nombre, effort, dureeMs), memoireOctets: memoire })
           if (trouvees.size >= nombre) {
             terminer()
-            resolve({ parts: assembler(trouvees, nombre), essais, fils, memoireOctets: memoireMax })
+            resolve({ parts: assembler(trouvees, nombre), essais, moteur, fils, dureeMs, memoireOctets: memoireMax })
           }
         }
-        travailleur.postMessage({ octets: options.octets.slice().buffer, graine, effort, debut: index, pas: fils, graineMax: GRAINE_MAX })
+        const octets = moteur === 'wasm' ? options.octets!.slice().buffer : undefined
+        travailleur.postMessage({ octets, graine, effort, debut: index, pas: fils, graineMax: GRAINE_MAX })
       }
     } catch (erreur) {
       echouer(erreur instanceof Error ? erreur.message : String(erreur))

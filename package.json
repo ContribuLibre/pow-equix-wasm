@@ -1,8 +1,17 @@
 {
   "name": "pow-equix-wasm",
-  "version": "0.1.0",
-  "description": "Preuve de travail Equi-X (Tor/Arti) en WebAssembly : un seul module qui résout dans le navigateur et vérifie côté serveur",
-  "keywords": ["proof-of-work", "pow", "equix", "hashx", "tor", "anti-spam", "webassembly", "wasm"],
+  "version": "0.2.0",
+  "description": "Preuve de travail Equi-X (Tor/Arti) en WebAssembly, avec repli en JavaScript pur : un seul module qui résout dans le navigateur et vérifie côté serveur",
+  "keywords": [
+    "proof-of-work",
+    "pow",
+    "equix",
+    "hashx",
+    "tor",
+    "anti-spam",
+    "webassembly",
+    "wasm"
+  ],
   "license": "LGPL-3.0-only",
   "homepage": "https://contribulibre.github.io/pow-equix-wasm/",
   "repository": {
@@ -20,6 +29,10 @@
     "./octets": {
       "types": "./dist/octets.d.ts",
       "default": "./dist/octets.js"
+    },
+    "./js": {
+      "types": "./dist/equix-js.d.ts",
+      "default": "./dist/equix-js.js"
     },
     "./equix.wasm": "./dist/equix.wasm",
     "./empreinte.json": "./dist/empreinte.json",
@@ -47,6 +60,7 @@
   },
   "devDependencies": {
     "@types/bun": "^1.3.0",
+    "binaryen": "132.0.0",
     "typescript": "^5.9.0"
   }
 }

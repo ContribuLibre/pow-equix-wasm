@@ -10,7 +10,8 @@ const racine = resolve(import.meta.dirname, '..')
 const site = resolve(racine, 'site')
 await rm(site, { recursive: true, force: true })
 await mkdir(site, { recursive: true })
-const resultat = await Bun.build({ entrypoints: [resolve(racine, 'demo/demo.ts')], outdir: site, target: 'browser', format: 'esm', minify: true, naming: 'demo.js' })
+// Le moteur JavaScript (≈ 500 Ko) forme un morceau à part, chargé seulement s’il sert.
+const resultat = await Bun.build({ entrypoints: [resolve(racine, 'demo/demo.ts')], outdir: site, target: 'browser', format: 'esm', minify: true, splitting: true, naming: { entry: 'demo.js', chunk: '[name]-[hash].[ext]' } })
 if (!resultat.success) {
   for (const message of resultat.logs) console.error(message)
   throw new Error('La construction de la démo a échoué')
