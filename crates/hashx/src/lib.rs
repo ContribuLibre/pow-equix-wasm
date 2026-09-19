@@ -50,6 +50,8 @@
 mod compiler;
 mod constraints;
 mod err;
+// Ajout pow-equix-wasm : interface qui expose le programme généré.
+pub mod expose;
 mod generator;
 mod program;
 mod rand;

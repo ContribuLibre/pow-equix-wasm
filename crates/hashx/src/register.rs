@@ -36,7 +36,6 @@ impl RegisterId {
     /// (Recall that hashx has 8 virtual registers,
     /// so the output of this method is always in range 0..=7.)
     #[inline(always)]
-    #[cfg(feature = "compiler")]
     pub(crate) fn as_u8(&self) -> u8 {
         self.0
     }
@@ -116,6 +115,14 @@ impl RegisterSet {
 #[derive(Debug, Clone, Eq, PartialEq)]
 #[repr(C)]
 pub(crate) struct RegisterFile([u64; NUM_REGISTERS]);
+
+// Ajout pow-equix-wasm : lecture des registres initiaux (voir expose.rs).
+impl From<RegisterFile> for [u64; NUM_REGISTERS] {
+    #[inline(always)]
+    fn from(registres: RegisterFile) -> Self {
+        registres.0
+    }
+}
 
 impl RegisterFile {
     /// Load a word from the register file.

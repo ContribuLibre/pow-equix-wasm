@@ -2,8 +2,10 @@
 # sous LGPL-3.0-only comme l’original. Seule différence voulue : une interface
 # publique qui expose le programme généré (liste d’instructions, clé des
 # registres) et la sortie étendue, pour compiler ce programme en WebAssembly
-# côté JavaScript. Les changements sont listés dans crates/hashx/VENDORISATION.md
-# et vérifiés contre la crate d’origine par les tests de pow-equix.
+# côté JavaScript. Changements : ajout de src/expose.rs (déclaré dans lib.rs),
+# `RegisterId::as_u8` disponible sans l’option `compiler`, conversion publique
+# d’un `RegisterFile` en tableau (register.rs), et option `compiler` désactivée
+# par défaut. Les tests de pow-equix comparent le résultat à la crate d’origine.
 #
 # D’après les algorithmes de tevador (https://github.com/tevador/equix/),
 # Copyright (c) 2020 tevador <tevador@gmail.com>, LGPL-3.0.
