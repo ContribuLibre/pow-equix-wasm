@@ -49,7 +49,17 @@ export type Scenario = {
    */
   difficulteMin?: number
   /** Posé par le mode « calibrer » sur la machine de référence. */
-  calibrage?: { medianeMs: number; repetitions: number; rapportP90P10?: number; partsInitiales?: number }
+  calibrage?: {
+    medianeMs?: number
+    repetitions?: number
+    rapportP90P10?: number
+    partsInitiales?: number
+    /** Tentatives et erreurs, quand il en a fallu plus d’une. */
+    tentatives?: number
+    erreurs?: string[]
+    /** partiel : gardé à la dernière difficulté mesurée ; nonCalibre : laissé tel quel. */
+    echec?: 'partiel' | 'nonCalibre'
+  }
 } & (
   | { algorithme: 'sha256'; parametres: Record<string, never> }
   | { algorithme: 'argon2id'; parametres: ParametresArgon2id }
@@ -152,7 +162,9 @@ export function validerScenarios(valeur: unknown): { scenarios: Scenario[] } | E
     if (s.sansParallelisation !== undefined && typeof s.sansParallelisation !== 'boolean') return { erreur: `${ou} : « sansParallelisation » vrai ou faux` }
     if (s.calibrage !== undefined) {
       const c = s.calibrage as Record<string, unknown> | null
-      if (typeof c !== 'object' || c === null || typeof c.medianeMs !== 'number' || !entier(c.repetitions, 1, 100_000)) return { erreur: `${ou} : « calibrage » { medianeMs, repetitions } attendu` }
+      const reussi = typeof c === 'object' && c !== null && typeof c.medianeMs === 'number' && entier(c.repetitions, 1, 100_000)
+      const echoue = typeof c === 'object' && c !== null && (c.echec === 'partiel' || c.echec === 'nonCalibre')
+      if (!reussi && !echoue) return { erreur: `${ou} : « calibrage » { medianeMs, repetitions } ou { echec } attendu` }
     }
     if (!entier(s.repetitions, 1, 100_000)) return { erreur: `${ou} : « repetitions » entier de 1 à 100 000` }
     const p = (s.parametres ?? {}) as Record<string, unknown>

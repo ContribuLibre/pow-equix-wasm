@@ -35,7 +35,6 @@ export interface TextesBanc {
     tentative: (id: string, tentative: number, maximum: number) => string
     debitEnCours: (id: string, concurrence: number, duree: string) => string
     calibrageDifficulte: (id: string, difficulte: number, mediane: string, cible: string) => string
-    difficultesCalibrees: (cible: string) => string
     plafond: (retenus: number, demandes: number, source: 'deviceMemory' | 'garde' | null) => string
     statuts: Record<'complet' | 'incomplet' | 'enCours' | 'nonCommence', string>
     auDessus: string
@@ -48,6 +47,9 @@ export interface TextesBanc {
     plantagesConstates: (liste: string) => string
     limitesLevees: (nombre: number) => string
     palier: (id: string, fils: number) => string
+    calibrageTermine: (cible: string, echecs: string[]) => string
+    calibrePartiel: (difficulte: number) => string
+    nonCalibre: string
   }
 }
 
@@ -136,7 +138,6 @@ const fr: TextesBanc = {
     tentative: (id, tentative, maximum) => `${id} : tentative ${tentative}/${maximum}.`,
     debitEnCours: (id, concurrence, duree) => `Débit maximal : ${id}, ${concurrence} défi(s) en parallèle pendant ${duree}…`,
     calibrageDifficulte: (id, difficulte, mediane, cible) => `Calibrage de ${id} : difficulté ${difficulte}, médiane ${mediane} pour ${cible} visées.`,
-    difficultesCalibrees: (cible) => `Difficultés calibrées pour une médiane de ${cible} : télécharge le fichier de scénarios pour les autres machines.`,
     plafond: (retenus, demandes, source) => `${retenus} (${source === 'garde' ? 'limite après plantage' : 'plafond de la mémoire annoncée'}, ${demandes} demandés)`,
     statuts: { complet: 'complet', incomplet: 'incomplet', enCours: 'en cours', nonCommence: 'non commencé' },
     auDessus: 'au-dessus de la cible',
@@ -149,6 +150,9 @@ const fr: TextesBanc = {
     plantagesConstates: (liste) => `Plantage constaté au dernier chargement : ${liste}. Ces réglages ne dépasseront plus ce nombre de fils sur cet appareil.`,
     limitesLevees: (nombre) => `${nombre} limite(s) de fils levée(s).`,
     palier: (id, fils) => `Palier de mémoire : ${id}, ${fils} fil(s)…`,
+    calibrageTermine: (cible, echecs) => `Calibrage terminé. Médiane visée : ${cible} ; télécharge le fichier de scénarios pour les autres machines.${echecs.length ? ` En échec après 3 tentatives : ${echecs.join(' ; ')}.` : ''}`,
+    calibrePartiel: (difficulte) => `gardé à la dernière difficulté mesurée, ${difficulte}`,
+    nonCalibre: 'non calibré',
   },
 }
 
@@ -237,7 +241,6 @@ const en: TextesBanc = {
     tentative: (id, tentative, maximum) => `${id}: attempt ${tentative}/${maximum}.`,
     debitEnCours: (id, concurrence, duree) => `Maximum throughput: ${id}, ${concurrence} challenge(s) in parallel for ${duree}…`,
     calibrageDifficulte: (id, difficulte, mediane, cible) => `Calibrating ${id}: difficulty ${difficulte}, median ${mediane} for a target of ${cible}.`,
-    difficultesCalibrees: (cible) => `Difficulties calibrated for a median of ${cible}: download the scenario file for the other machines.`,
     plafond: (retenus, demandes, source) => `${retenus} (${source === 'garde' ? 'limit after a crash' : 'announced memory cap'}, ${demandes} requested)`,
     statuts: { complet: 'complete', incomplet: 'incomplete', enCours: 'in progress', nonCommence: 'not started' },
     auDessus: 'above target',
@@ -250,6 +253,10 @@ const en: TextesBanc = {
     plantagesConstates: (liste) => `Crash detected on the last load: ${liste}. These settings will no longer exceed this number of threads on this device.`,
     limitesLevees: (nombre) => `${nombre} thread limit(s) lifted.`,
     palier: (id, fils) => `Memory step: ${id}, ${fils} thread(s)…`,
+    // « Calibrage terminé. » reste en français en tête, pour un pilotage automatique commun aux deux langues.
+    calibrageTermine: (cible, echecs) => `Calibrage terminé. Calibration done. Target median: ${cible}; download the scenario file for the other machines.${echecs.length ? ` Failed after 3 attempts: ${echecs.join('; ')}.` : ''}`,
+    calibrePartiel: (difficulte) => `kept at the last measured difficulty, ${difficulte}`,
+    nonCalibre: 'not calibrated',
   },
 }
 

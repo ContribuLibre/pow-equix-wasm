@@ -324,25 +324,52 @@ element('calibrer').addEventListener('click', () => executer(async (env) => {
 }))
 
 // Mode « calibrer » : sur la machine de référence, difficultés ajustées puis figées dans le fichier.
+// Mode « calibrer » : chaque scénario a 3 tentatives au plus (une erreur en consomme une) ;
+// en cas d’échec, il garde la dernière difficulté mesurée, ou reste non calibré, et le
+// calibrage passe au suivant. Il se termine toujours par « Calibrage terminé. ».
 element('calibrer-difficultes').addEventListener('click', () => executer(async (env) => {
   const source = fichierScenarios!
   const cible = source.dureeCibleMs
   const calibres: Scenario[] = []
+  const echecs: string[] = []
   for (const scenario of source.scenarios) {
-    const fils = await monterParPaliers(scenario, plafond(scenario).retenus, env, garde, (palier) => { etat.textContent = t.palier(scenario.id, palier) })
-    afficherGarde()
-    const resultat = await calibrerDifficulte(scenario, Math.min(fils, plafond(scenario).retenus), cible, env, {
-      onTour: (difficulte, mediane, parts) => { etat.textContent = t.calibrageDifficulte(`${scenario.id} (${parts} parts)`, difficulte, duree(mediane), duree(cible)) },
-    })
-    calibres.push({
-      ...scenario, difficulte: resultat.difficulte, parts: resultat.parts,
-      calibrage: { medianeMs: Math.round(resultat.medianeMs), repetitions: resultat.defis, rapportP90P10: Number(resultat.rapportP90P10.toFixed(3)), ...(resultat.parts !== scenario.parts ? { partsInitiales: scenario.parts } : {}) },
-    } as Scenario)
+    let dernier: { difficulte: number; mediane: number; parts: number } | null = null
+    let calibre: Scenario | null = null
+    const erreurs: string[] = []
+    for (let tentative = 1; tentative <= TENTATIVES_MAX && !calibre; tentative++) {
+      try {
+        etat.textContent = t.tentative(scenario.id, tentative, TENTATIVES_MAX)
+        const fils = await monterParPaliers(scenario, plafond(scenario).retenus, env, garde, (palier) => { etat.textContent = t.palier(scenario.id, palier) })
+        afficherGarde()
+        const resultat = await calibrerDifficulte(scenario, Math.min(fils, plafond(scenario).retenus), cible, env, {
+          onTour: (difficulte, mediane, parts) => {
+            dernier = { difficulte, mediane, parts }
+            etat.textContent = t.calibrageDifficulte(`${scenario.id} (${parts} parts)`, difficulte, duree(mediane), duree(cible))
+          },
+        })
+        calibre = {
+          ...scenario, difficulte: resultat.difficulte, parts: resultat.parts,
+          calibrage: { medianeMs: Math.round(resultat.medianeMs), repetitions: resultat.defis, rapportP90P10: Number(resultat.rapportP90P10.toFixed(3)), ...(resultat.parts !== scenario.parts ? { partsInitiales: scenario.parts } : {}), ...(erreurs.length ? { tentatives: tentative, erreurs } : {}) },
+        } as Scenario
+      } catch (erreur) {
+        if (annulation?.signal.aborted) throw erreur
+        erreurs.push(erreur instanceof Error ? erreur.message : String(erreur))
+      }
+    }
+    if (!calibre) {
+      const valide = dernier as { difficulte: number; mediane: number; parts: number } | null
+      echecs.push(`${scenario.id} (${valide ? t.calibrePartiel(valide.difficulte) : t.nonCalibre} : ${erreurs.at(-1)})`)
+      calibre = {
+        ...scenario, ...(valide ? { difficulte: valide.difficulte, parts: valide.parts } : {}),
+        calibrage: { ...(valide ? { medianeMs: Math.round(valide.mediane) } : {}), tentatives: TENTATIVES_MAX, erreurs, echec: valide ? 'partiel' : 'nonCalibre' },
+      } as Scenario
+    }
+    calibres.push(calibre)
   }
   const saisie = saisi()
   ecrireFichier({ ...source, scenarios: calibres, calibrage: { date: new Date().toISOString(), appareil: [saisie.modele, saisie.processeur].filter(Boolean).join(', ') || descriptionAppareil(detecte.agent), agent: detecte.agent } })
   await lireScenarios()
-  etat.textContent = t.difficultesCalibrees(duree(cible))
+  etat.textContent = t.calibrageTermine(duree(cible), echecs)
 }))
 
 /** Résultats de chaque scénario d’après le stockage : complets, partiels ou non commencés. */
