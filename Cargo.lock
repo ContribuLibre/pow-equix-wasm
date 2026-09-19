@@ -194,6 +194,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "pow-hashx"
+version = "0.9.1"
+dependencies = [
+ "arrayvec",
+ "blake2",
+ "dynasmrt",
+ "fixed-capacity-vec",
+ "hex",
+ "rand_core",
+ "thiserror",
+]
+
+[[package]]
 name = "proc-macro-error-attr3"
 version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

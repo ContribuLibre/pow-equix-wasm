@@ -1,0 +1,35 @@
+# Copie locale (vendorisée) de la crate `hashx` 0.9.1 du projet Arti de Tor,
+# sous LGPL-3.0-only comme l’original. Seule différence voulue : une interface
+# publique qui expose le programme généré (liste d’instructions, clé des
+# registres) et la sortie étendue, pour compiler ce programme en WebAssembly
+# côté JavaScript. Les changements sont listés dans crates/hashx/VENDORISATION.md
+# et vérifiés contre la crate d’origine par les tests de pow-equix.
+#
+# D’après les algorithmes de tevador (https://github.com/tevador/equix/),
+# Copyright (c) 2020 tevador <tevador@gmail.com>, LGPL-3.0.
+[package]
+name = "pow-hashx"
+description = "Copie de hashx 0.9.1 (Arti) qui expose le programme généré"
+version = "0.9.1"
+authors = ["The Tor Project, Inc.", "Micah Elizabeth Scott <beth@torproject.org>"]
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+name = "hashx"
+
+[features]
+default = []
+compiler = ["dep:dynasmrt", "dep:hex"]
+
+[dependencies]
+arrayvec = "0.7.3"
+blake2 = "0.10.6"
+dynasmrt = { version = "5.1.0", optional = true }
+fixed-capacity-vec = "1.0"
+hex = { version = "0.4.3", optional = true }
+rand_core = "0.10.1"
+thiserror = "2"

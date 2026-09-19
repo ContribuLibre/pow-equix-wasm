@@ -6,7 +6,7 @@
 # aux serveurs JavaScript par une interface C minimale, sans wasm-bindgen.
 [workspace]
 resolver = "3"
-members = ["crates/pow-equix", "crates/pow-equix-wasm"]
+members = ["crates/hashx", "crates/pow-equix", "crates/pow-equix-wasm"]
 
 [workspace.package]
 version = "0.2.1"
