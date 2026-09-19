@@ -489,6 +489,49 @@ les reproduisent.
 - La mémoire réelle du module est celle de sa mémoire linéaire après un essai :
   mémoire de travail du solveur plus ≈ 1,3 Mio (pile, tas, tampon).
 
+## Banc comparatif (démo)
+
+Le tableau de [Pourquoi Equi-X](#pourquoi-equi-x) se remplit avec un banc
+standardisé, qui fait partie de la démo seulement (rien n’en entre dans
+`dist/` ni dans les dépendances du paquet) : <https://contribulibre.github.io/pow-equix-wasm/fr/banc/>
+(`/en/banc/` en anglais), lien « Banc comparatif » depuis la démo.
+
+- **Moteurs** : SHA-256 en hashcash (bits nuls en tête de
+  `SHA-256(graine ‖ nonce)`) par une boucle JavaScript spécialisée
+  (`demo/banc/sha256.ts` : état intermédiaire du préfixe, seul le bloc du nonce
+  recalculé ; ≈ 1 µs par empreinte contre ≈ 3,5 µs avec hash-wasm appelé par
+  empreinte et ≈ 5 µs avec WebCrypto, asynchrone, mesuré sous Bun) ;
+  Argon2id par hash-wasm (en `devDependencies`, version figée ; m, t, p
+  réglables, un essai = une empreinte de `graine ‖ nonce`, réussi selon les
+  bits nuls en tête) ; Equi-X par la bibliothèque elle-même. Tous en plusieurs
+  parts, sur 1 à N Web Workers, annulables, avec progression.
+- **Scénario** : `{ id, libelle, algorithme, parametres, parts, difficulte,
+  fils, repetitions }`, en JSON modifiable dans la page, importable et
+  exportable. Au moins 100 répétitions par scénario ; un mode rapide (10)
+  sert à essayer le banc et marque les résultats comme non représentatifs.
+  **Les scénarios par défaut sont provisoires**, en attente d’arbitrage.
+- **Par répétition** : durée du défi (Web Workers créés compris, comme une
+  page qui calcule une preuve), essais, mémoire (mesurée pour Equi-X, estimée
+  pour Argon2id et SHA-256), taille de la preuve, puis vérification (temps,
+  mémoire, validité). **Statistiques** : médiane, moyenne, p5, p10, p90,
+  p95, min, max, rapport p95/p5, défis résolus en 100 s (extrapolé de la
+  moyenne, et mesuré quand les répétitions enchaînées couvrent 100 s).
+- **Débit de vérification** : parts valides vérifiées par seconde, par
+  configuration, sur 1 fil et sur tous les cœurs (ligne « résistance au DoS »).
+- **Fiche de l’appareil** : navigateur, cœurs, `deviceMemory`, écran détectés,
+  et champs libres (modèle, processeur, GPU, RAM, remarques).
+- **Estimation** de la durée totale avant de lancer, d’après des références,
+  puis d’après un calibrage de quelques secondes sur l’appareil.
+- **Export** JSON complet, schéma `pow-equix-wasm/banc` version 1, décrit par
+  les types de `demo/banc/schema.ts` ; `bun scripts/agreger-banc.ts
+  fichiers.json… [--json]` en réunit plusieurs et produit les lignes du
+  tableau (hors lignes « 10 000 € » et « 1 000 000 € », à extrapoler).
+- **Banc natif** (sans navigateur, pour les extrapolations) :
+  `cargo run --release -p pow-equix --features compilateur --example mesure --
+  20 --n 60,72,80 --execution compile,interprete --fils 1,8 --json` : essais
+  par seconde par fil et au total, décomposés, et vérification par part, une
+  ligne JSON (`pow-equix-wasm/banc-natif`) par mesure.
+
 ## Construction reproductible
 
 Rien de construit n’est versionné : `dist/` et `site/` sont produits par la CI.
