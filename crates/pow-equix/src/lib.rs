@@ -20,9 +20,18 @@
 //! une chance sur `effort` par solution. La graine HashX est le défi lui-même
 //! pour n = 60.
 //!
-//! Une preuve complète réunit `nombre` parts, `compteur ‖ solution`, aux
-//! compteurs strictement croissants : 20 octets pour n = 60 (format de la 0.2,
-//! inchangé), 36 au-delà (indices sur 32 bits).
+//! Une preuve complète réunit `nombre` parts, aux compteurs strictement
+//! croissants, sous une forme d’octets unique :
+//!
+//! ```text
+//! pour chaque part : écart (LEB128 non signé, 1 à 5 octets) ‖ solution rangée (n/4 + 1 octets)
+//! ```
+//!
+//! Le premier écart est le compteur lui-même, les suivants `compteur −
+//! précédent − 1`. Un LEB128 non canonique, un compteur au-delà de `u32::MAX`,
+//! un nombre de parts différent ou des octets en trop sont refusés : une preuve
+//! n’a qu’un encodage, si bien qu’une détection de rejeu fondée sur son
+//! empreinte ne se contourne pas en la réencodant.
 
 #![forbid(unsafe_code)]
 
@@ -35,23 +44,98 @@ use blake2::{Blake2b, Digest};
 pub use hashx::{self, RuntimeOption};
 pub use equihash::{N_EQUIX, N_MAX, N_VALIDES, Parametres, Solution, graine_hashx, n_valide};
 
-/// Version du format de défi et de preuve : 2 depuis l’ajout de n (les preuves
-/// n = 60 de la version 1 restent valides telles quelles).
+/// Version du format de défi et de preuve : 2 depuis l’ajout de n et de la
+/// forme compacte (rupture avec les preuves de la 0.2, à compteurs u32).
 pub const VERSION_FORMAT: u32 = 2;
 /// Taille maximale d’une graine.
 pub const GRAINE_MAX: usize = 256;
 /// Taille d’une solution Equi-X (n = 60).
 pub const TAILLE_SOLUTION: usize = 16;
-/// Taille d’une part de preuve Equi-X (n = 60) : compteur puis solution.
-pub const TAILLE_PART: usize = 4 + TAILLE_SOLUTION;
-/// Taille maximale d’une part, pour n > 60.
-pub const TAILLE_PART_MAX: usize = 4 + 32;
+/// Octets au plus d’un écart de compteur (LEB128 d’un u32).
+pub const ECART_MAX: usize = 5;
+/// Taille maximale d’une part : écart le plus long et solution de n = 80.
+pub const TAILLE_PART_MAX: usize = ECART_MAX + (N_MAX as usize) / 4 + 1;
 /// Nombre maximal de parts accepté par la vérification.
 pub const PARTS_MAX: usize = 64;
 
-/// Taille d’une part pour n (0 si n n’est pas accepté).
-pub fn taille_part(n: u32) -> usize {
-    Parametres::new(n).map_or(0, |parametres| 4 + parametres.taille_solution())
+/// Taille maximale d’une preuve de `nombre` parts pour n (0 si n ou nombre
+/// sont refusés) : de quoi rejeter une entrée trop longue avant tout calcul.
+pub fn taille_max_preuve(n: u32, nombre: usize) -> usize {
+    match Parametres::new(n) {
+        Some(parametres) if (1..=PARTS_MAX).contains(&nombre) => nombre * (ECART_MAX + parametres.taille_solution()),
+        _ => 0,
+    }
+}
+
+/// Lit un LEB128 non signé canonique d’au plus 5 octets, valeur ≤ `u32::MAX`.
+/// Renvoie la valeur et le nombre d’octets lus.
+fn lire_ecart(octets: &[u8]) -> Option<(u32, usize)> {
+    let mut valeur = 0u64;
+    for (rang, &octet) in octets.iter().take(ECART_MAX).enumerate() {
+        valeur |= u64::from(octet & 0x7f) << (7 * rang);
+        if octet & 0x80 == 0 {
+            // Un octet final nul n’est permis que seul : sinon, zéros de tête superflus.
+            if rang > 0 && octet == 0 {
+                return None;
+            }
+            return u32::try_from(valeur).ok().map(|valeur| (valeur, rang + 1));
+        }
+    }
+    None
+}
+
+fn ecrire_ecart(sortie: &mut Vec<u8>, mut valeur: u32) {
+    while valeur >= 0x80 {
+        sortie.push((valeur as u8 & 0x7f) | 0x80);
+        valeur >>= 7;
+    }
+    sortie.push(valeur as u8);
+}
+
+/// Décode une preuve : exactement `nombre` parts `(compteur, solution rangée)`,
+/// tous les octets consommés, écarts canoniques. `None` sinon.
+pub fn decoder_preuve(preuve: &[u8], nombre: usize, n: u32) -> Option<Vec<(u32, &[u8])>> {
+    let taille = Parametres::new(n)?.taille_solution();
+    if !(1..=PARTS_MAX).contains(&nombre) || preuve.len() > taille_max_preuve(n, nombre) {
+        return None;
+    }
+    let mut reste = preuve;
+    let mut precedent: Option<u32> = None;
+    let mut parts = Vec::with_capacity(nombre);
+    for _ in 0..nombre {
+        let (ecart, lus) = lire_ecart(reste)?;
+        let compteur = match precedent {
+            None => ecart,
+            Some(precedent) => u32::try_from(u64::from(precedent) + 1 + u64::from(ecart)).ok()?,
+        };
+        reste = &reste[lus..];
+        if reste.len() < taille {
+            return None;
+        }
+        let (solution, suite) = reste.split_at(taille);
+        parts.push((compteur, solution));
+        precedent = Some(compteur);
+        reste = suite;
+    }
+    reste.is_empty().then_some(parts)
+}
+
+/// Encode une preuve depuis ses parts, compteurs strictement croissants ;
+/// `None` sinon. Forme inverse de [`decoder_preuve`].
+pub fn encoder_preuve(parts: &[(u32, &[u8])]) -> Option<Vec<u8>> {
+    let mut sortie = Vec::new();
+    let mut precedent: Option<u32> = None;
+    for &(compteur, solution) in parts {
+        let ecart = match precedent {
+            None => compteur,
+            Some(precedent) if compteur > precedent => compteur - precedent - 1,
+            Some(_) => return None,
+        };
+        ecrire_ecart(&mut sortie, ecart);
+        sortie.extend_from_slice(solution);
+        precedent = Some(compteur);
+    }
+    Some(sortie)
 }
 
 /// Défi d’un essai : la graine suivie du compteur.
@@ -94,24 +178,13 @@ pub fn verifier_part(graine: &[u8], compteur: u32, solution: &[u8], effort: u32,
         && equihash::hashx_interprete(&graine_hashx).is_some_and(|hashx| equihash::solution_valide(&hashx, parametres, &indices))
 }
 
-/// Vérifie une preuve complète : exactement `nombre` parts, compteurs strictement croissants.
-pub fn verifier_preuve(graine: &[u8], effort: u32, nombre: usize, parts: &[u8], n: u32) -> bool {
-    let taille = taille_part(n);
-    if taille == 0 || !graine_valide(graine) || nombre == 0 || nombre > PARTS_MAX || parts.len() != nombre * taille {
+/// Vérifie une preuve complète (voir [`decoder_preuve`] pour sa forme unique).
+pub fn verifier_preuve(graine: &[u8], effort: u32, nombre: usize, preuve: &[u8], n: u32) -> bool {
+    if !graine_valide(graine) {
         return false;
     }
-    let mut precedent: Option<u32> = None;
-    for part in parts.chunks_exact(taille) {
-        let compteur = u32::from_le_bytes([part[0], part[1], part[2], part[3]]);
-        if precedent.is_some_and(|valeur| compteur <= valeur) {
-            return false;
-        }
-        precedent = Some(compteur);
-        if !verifier_part(graine, compteur, &part[4..], effort, n) {
-            return false;
-        }
-    }
-    true
+    let Some(parts) = decoder_preuve(preuve, nombre, n) else { return false };
+    parts.iter().all(|&(compteur, solution)| verifier_part(graine, compteur, solution, effort, n))
 }
 
 /// Solveur réutilisant sa mémoire de travail d’un essai à l’autre (réallouée
@@ -212,23 +285,24 @@ impl Solveur {
     }
 
     /// Preuve complète calculée d’une traite, à partir du compteur `debut`.
-    /// Renvoie les parts et le nombre d’essais.
+    /// Renvoie la preuve encodée et le nombre d’essais.
     pub fn prouver(&mut self, graine: &[u8], effort: u32, nombre: usize, debut: u32, n: u32) -> Option<(Vec<u8>, u64)> {
-        let taille = taille_part(n);
-        if taille == 0 || !graine_valide(graine) || nombre == 0 || nombre > PARTS_MAX {
+        if taille_max_preuve(n, nombre) == 0 || !graine_valide(graine) {
             return None;
         }
-        let mut parts = Vec::with_capacity(nombre * taille);
+        let mut parts: Vec<(u32, Vec<u8>)> = Vec::with_capacity(nombre);
         let mut essais = 0u64;
         let mut compteur = debut;
-        while parts.len() < nombre * taille {
+        while parts.len() < nombre {
             essais += 1;
             if let Some(solution) = self.essayer(graine, compteur, effort, n) {
-                parts.extend_from_slice(&compteur.to_le_bytes());
-                parts.extend_from_slice(&solution);
+                parts.push((compteur, solution));
             }
-            compteur = compteur.checked_add(1)?;
+            if parts.len() < nombre {
+                compteur = compteur.checked_add(1)?;
+            }
         }
-        Some((parts, essais))
+        let parts: Vec<(u32, &[u8])> = parts.iter().map(|(compteur, solution)| (*compteur, solution.as_slice())).collect();
+        Some((encoder_preuve(&parts)?, essais))
     }
 }

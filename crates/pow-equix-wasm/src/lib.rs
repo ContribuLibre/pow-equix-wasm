@@ -6,7 +6,7 @@
 //!
 //! ```text
 //! [0, GRAINE_MAX)                          graine, écrite par l’appelant
-//! [GRAINE_MAX, + PARTS_MAX × 36)           parts à vérifier, ou solution trouvée
+//! [GRAINE_MAX, + PARTS_MAX × 26)           preuve à vérifier, ou solution trouvée
 //! [ZONE_PROGRAMME, + 48)                   en-tête de l’essai préparé (voir `preparer`)
 //! [ZONE_PROGRAMME + 48, + 512 × 8)         programme HashX encodé (hashx::expose)
 //! ```
@@ -19,7 +19,7 @@
 //!   module), puis `chercher`. Le résultat est le même, octet pour octet.
 
 use pow_equix::hashx::expose::TAILLE_PROGRAMME;
-use pow_equix::{GRAINE_MAX, PARTS_MAX, Parametres, Solveur, TAILLE_PART_MAX, VERSION_FORMAT, taille_part, verifier_preuve};
+use pow_equix::{GRAINE_MAX, PARTS_MAX, Parametres, Solveur, TAILLE_PART_MAX, VERSION_FORMAT, decoder_preuve, taille_max_preuve, verifier_preuve};
 use std::cell::RefCell;
 
 const ZONE_PARTS: usize = GRAINE_MAX;
@@ -89,22 +89,36 @@ pub extern "C" fn version_format() -> u32 {
     VERSION_FORMAT
 }
 
-/// Vérifie `nombre` parts écrites après la graine, pour le paramètre n.
-/// Renvoie 1 si la preuve est valide.
+/// Preuve de `longueur` octets écrite après la graine, si sa taille est possible pour `nombre` et n.
+fn preuve(nombre: u32, n: u32, longueur: u32) -> Option<&'static [u8]> {
+    let longueur = longueur as usize;
+    (longueur <= taille_max_preuve(n, nombre as usize)).then(|| &tampon()[ZONE_PARTS..ZONE_PARTS + longueur])
+}
+
+/// Vérifie la preuve de `longueur` octets écrite après la graine (`nombre`
+/// parts, paramètre n). Renvoie 1 si elle est valide.
 #[unsafe(no_mangle)]
-pub extern "C" fn verifier(longueur_graine: u32, effort: u32, nombre: u32, n: u32) -> u32 {
-    let nombre = nombre as usize;
+pub extern "C" fn verifier(longueur_graine: u32, effort: u32, nombre: u32, n: u32, longueur: u32) -> u32 {
     let Some(graine) = graine(longueur_graine) else { return 0 };
-    let taille = taille_part(n);
-    if taille == 0 || nombre == 0 || nombre > PARTS_MAX {
-        return 0;
+    let Some(preuve) = preuve(nombre, n, longueur) else { return 0 };
+    u32::from(verifier_preuve(&graine, effort, nombre as usize, preuve, n))
+}
+
+/// Décode la preuve de `longueur` octets écrite après la graine, sans la
+/// vérifier : écrit ses `nombre` compteurs (u32 petit-boutistes) au début de la
+/// zone du programme et renvoie 1, ou 0 si sa forme n’est pas la forme unique.
+#[unsafe(no_mangle)]
+pub extern "C" fn compteurs(nombre: u32, n: u32, longueur: u32) -> u32 {
+    let Some(parts) = preuve(nombre, n, longueur).and_then(|preuve| decoder_preuve(preuve, nombre as usize, n)) else { return 0 };
+    let compteurs: Vec<u32> = parts.iter().map(|&(compteur, _)| compteur).collect();
+    for (rang, compteur) in compteurs.into_iter().enumerate() {
+        tampon()[ZONE_PROGRAMME + rang * 4..ZONE_PROGRAMME + rang * 4 + 4].copy_from_slice(&compteur.to_le_bytes());
     }
-    let parts = &tampon()[ZONE_PARTS..ZONE_PARTS + nombre * taille];
-    u32::from(verifier_preuve(&graine, effort, nombre, parts, n))
+    1
 }
 
 /// Un essai complet sur le compteur donné, HashX interprété. Renvoie 1 et écrit
-/// la solution (16 octets pour n = 60, 32 au-delà) au début de la zone des
+/// la solution rangée (n/4 + 1 octets) au début de la zone des
 /// parts si elle atteint l’effort, 0 sinon.
 #[unsafe(no_mangle)]
 pub extern "C" fn essayer(longueur_graine: u32, effort: u32, compteur: u32, n: u32) -> u32 {

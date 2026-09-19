@@ -11,7 +11,7 @@ use hashx::expose::{self, TAILLE_INSTRUCTION};
 use hashx_arti::HashX as HashXArti;
 use pow_equix::equihash::{self, Parametres, Solution};
 use pow_equix::solveur::MemoireSolveur;
-use pow_equix::{RuntimeOption, Solveur, TAILLE_PART, defi, graine_hashx, verifier_part, verifier_preuve};
+use pow_equix::{RuntimeOption, Solveur, decoder_preuve, defi, encoder_preuve, graine_hashx, taille_max_preuve, verifier_part, verifier_preuve};
 
 const GRAINE: &[u8] = b"pow-equix/equivalence\0graine";
 
@@ -147,20 +147,96 @@ fn n60_verification_croisee_et_alterations() {
 }
 
 #[test]
-fn n60_les_preuves_de_la_version_0_2_restent_valides() {
-    // Preuve de 3 parts à l’effort 4 : même format (20 octets par part) qu’en 0.2.
+fn n60_la_solution_garde_la_forme_d_equix_mais_l_enveloppe_rompt_avec_la_0_2() {
     let mut solveur = solveur();
-    let (parts, essais) = solveur.prouver(GRAINE, 4, 3, 0, 60).expect("preuve");
-    assert_eq!(parts.len(), 3 * TAILLE_PART);
+    let (preuve, essais) = solveur.prouver(GRAINE, 4, 3, 0, 60).expect("preuve");
     assert!(essais >= 3);
-    assert!(verifier_preuve(GRAINE, 4, 3, &parts, 60));
-    for part in parts.chunks_exact(TAILLE_PART) {
-        let compteur = u32::from_le_bytes(part[..4].try_into().expect("4 octets"));
-        let solution: &[u8; 16] = part[4..].try_into().expect("16 octets");
-        // Equi-X accepte la solution, et la règle d’effort porte sur défi ‖ solution comme avant.
+    assert!(verifier_preuve(GRAINE, 4, 3, &preuve, 60));
+    let parts = decoder_preuve(&preuve, 3, 60).expect("forme canonique");
+    // Écarts d’un octet (compteurs < 128) : 3 × (1 + 16) octets, au lieu de 3 × 20 en 0.2.
+    assert_eq!(preuve.len(), 3 * 17);
+    let mut ancienne = Vec::new();
+    for &(compteur, solution) in &parts {
+        let solution: &[u8; 16] = solution.try_into().expect("16 octets");
+        // Solution rangée = 8 × u16 petit-boutistes d’Equi-X ; effort sur défi ‖ solution, comme avant.
         assert!(equix_interprete().verify_bytes(&defi(GRAINE, compteur), solution).is_ok());
         assert!(pow_equix::effort_atteint(&defi(GRAINE, compteur), solution, 4));
+        ancienne.extend_from_slice(&compteur.to_le_bytes());
+        ancienne.extend_from_slice(solution);
     }
+    // Rupture assumée : la même preuve au format de la 0.2 (compteur u32 ‖ solution) est refusée.
+    assert!(!verifier_preuve(GRAINE, 4, 3, &ancienne, 60));
+}
+
+#[test]
+fn la_solution_rangee_fait_l_aller_retour_sur_b_bits_par_indice() {
+    let mut graine = 0x9e37_79b9_7f4a_7c15u64;
+    for n in pow_equix::N_VALIDES {
+        let parametres = Parametres::new(n).expect("n");
+        assert_eq!(parametres.taille_solution(), (n / 4 + 1) as usize);
+        for _ in 0..200 {
+            let indices: Solution = std::array::from_fn(|_| {
+                graine ^= graine << 13;
+                graine ^= graine >> 7;
+                graine ^= graine << 17;
+                (graine as u32) & ((1 << parametres.bits_indice()) - 1)
+            });
+            let octets = equihash::encoder(parametres, &indices);
+            assert_eq!(octets.len(), parametres.taille_solution());
+            assert_eq!(equihash::decoder(parametres, &octets), Some(indices));
+            if n == 60 {
+                let u16s: Vec<u8> = indices.iter().flat_map(|&indice| (indice as u16).to_le_bytes()).collect();
+                assert_eq!(octets, u16s);
+            }
+        }
+    }
+    // L’indice 0 occupe les bits de poids faible du flux.
+    let parametres = Parametres::new(80).expect("n = 80");
+    let mut indices = [0u32; 8];
+    indices[0] = 1;
+    indices[1] = 1;
+    assert_eq!(equihash::encoder(parametres, &indices)[..3], [0b0000_0001, 0, 0b0010_0000]);
+}
+
+#[test]
+fn l_enveloppe_n_accepte_qu_une_forme_d_octets() {
+    let solution = [0xabu8; 16];
+    let preuve = |ecarts: &[&[u8]]| -> Vec<u8> { ecarts.iter().flat_map(|ecart| [*ecart, &solution[..]].concat()).collect() };
+    let compteurs = |octets: &[u8], nombre: usize| decoder_preuve(octets, nombre, 60).map(|parts| parts.iter().map(|part| part.0).collect::<Vec<_>>());
+    // Aller-retour, écarts de 1 à 5 octets, jusqu’à u32::MAX.
+    for liste in [vec![0u32], vec![0, 1, 2], vec![127, 128, 16_511], vec![5, 1_000_000, u32::MAX], vec![u32::MAX]] {
+        let parts: Vec<(u32, &[u8])> = liste.iter().map(|&compteur| (compteur, &solution[..])).collect();
+        let octets = encoder_preuve(&parts).expect("compteurs croissants");
+        assert_eq!(compteurs(&octets, liste.len()), Some(liste.clone()));
+        assert!(octets.len() <= taille_max_preuve(60, liste.len()));
+    }
+    assert_eq!(compteurs(&preuve(&[&[0x7f], &[0x00]]), 2), Some(vec![127, 128]));
+    assert_eq!(compteurs(&preuve(&[&[0xff, 0xff, 0xff, 0xff, 0x0f]]), 1), Some(vec![u32::MAX]));
+    // Formes non canoniques : zéros de tête, plus de 5 octets, dépassement de u32.
+    assert_eq!(compteurs(&preuve(&[&[0x80, 0x00]]), 1), None);
+    assert_eq!(compteurs(&preuve(&[&[0x81, 0x80, 0x00]]), 1), None);
+    assert_eq!(compteurs(&preuve(&[&[0x80, 0x80, 0x80, 0x80, 0x80, 0x01]]), 1), None);
+    assert_eq!(compteurs(&preuve(&[&[0xff, 0xff, 0xff, 0xff, 0x10]]), 1), None);
+    // Compteur cumulé au-delà de u32::MAX.
+    assert_eq!(compteurs(&preuve(&[&[0xff, 0xff, 0xff, 0xff, 0x0f], &[0x00]]), 2), None);
+    assert_eq!(compteurs(&preuve(&[&[0xfe, 0xff, 0xff, 0xff, 0x0f], &[0x00]]), 2), Some(vec![u32::MAX - 1, u32::MAX]));
+    // Exactement `nombre` parts, tous les octets consommés.
+    let deux = preuve(&[&[0x03], &[0x00]]);
+    assert_eq!(compteurs(&deux, 2), Some(vec![3, 4]));
+    assert_eq!(compteurs(&deux, 1), None);
+    assert_eq!(compteurs(&deux, 3), None);
+    assert_eq!(compteurs(&[deux.as_slice(), &[0]].concat(), 2), None);
+    assert_eq!(compteurs(&deux[..deux.len() - 1], 2), None);
+    assert_eq!(compteurs(&[], 0), None);
+    assert_eq!(compteurs(&[], 1), None);
+    // Trop long pour ce nombre de parts : refusé avant toute lecture.
+    assert_eq!(taille_max_preuve(60, 4), 4 * 21);
+    assert_eq!(taille_max_preuve(80, 4), 4 * 26);
+    assert_eq!(taille_max_preuve(60, 0), 0);
+    assert_eq!(taille_max_preuve(62, 1), 0);
+    // L’encodeur refuse des compteurs qui ne croissent pas strictement.
+    assert!(encoder_preuve(&[(4, &solution[..]), (4, &solution[..])]).is_none());
+    assert!(encoder_preuve(&[(5, &solution[..]), (4, &solution[..])]).is_none());
 }
 
 /// Interprète de référence écrit d’après l’encodage documenté dans `expose.rs`,
@@ -266,29 +342,30 @@ fn le_programme_expose_calcule_comme_hashx() {
 fn au_dela_de_60_une_preuve_se_verifie_et_toute_alteration_est_refusee() {
     let mut solveur = solveur();
     for n in [64, 68] {
-        let taille = pow_equix::taille_part(n);
-        assert_eq!(taille, 36);
+        let taille = (n / 4 + 1) as usize;
         let (parts, _) = solveur.prouver(GRAINE, 2, 2, 0, n).expect("preuve");
-        assert_eq!(parts.len(), 2 * taille);
+        let decodees = decoder_preuve(&parts, 2, n).expect("preuve canonique");
+        let premiere = decodees[0].0;
+        let longueur_premiere = taille + if premiere < 128 { 1 } else { 2 };
+        assert!(parts.len() <= taille_max_preuve(n, 2));
         assert!(verifier_preuve(GRAINE, 2, 2, &parts, n));
         // Autre n, autre graine, autre nombre, autre effort.
         assert!(!verifier_preuve(GRAINE, 2, 2, &parts, if n == 64 { 68 } else { 64 }));
         assert!(!verifier_preuve(GRAINE, 2, 2, &parts, 60));
         assert!(!verifier_preuve(GRAINE, 2, 2, &parts, 62));
         assert!(!verifier_preuve(b"autre graine", 2, 2, &parts, n));
-        assert!(verifier_preuve(GRAINE, 2, 1, &parts[..taille], n));
+        assert!(verifier_preuve(GRAINE, 2, 1, &parts[..longueur_premiere], n));
         assert!(!verifier_preuve(GRAINE, 2, 3, &parts, n));
-        for octet in 4..taille {
+        for octet in 0..parts.len() {
             let mut alteree = parts.clone();
             alteree[octet] ^= 0x10;
             assert!(!verifier_preuve(GRAINE, 2, 2, &alteree, n), "n = {n}, octet {octet}");
         }
-        // Un indice hors de la liste (2^(n/4+1)) est refusé avant tout calcul.
-        let parametres = Parametres::new(n).expect("n");
-        let mut indices = equihash::decoder(parametres, &parts[4..taille]).expect("solution");
-        indices[7] = parametres.elements() as u32;
-        let compteur = u32::from_le_bytes(parts[..4].try_into().expect("4 octets"));
-        assert!(!verifier_part(GRAINE, compteur, &equihash::encoder(parametres, &indices), 1, n));
+        // Une solution de mauvaise taille est refusée avant tout calcul.
+        let (compteur, solution) = decodees[0];
+        assert!(verifier_part(GRAINE, compteur, solution, 1, n));
+        assert!(!verifier_part(GRAINE, compteur, &[solution, &[0]].concat(), 1, n));
+        assert!(!verifier_part(GRAINE, compteur, &solution[1..], 1, n));
     }
 }
 
@@ -296,7 +373,7 @@ fn au_dela_de_60_une_preuve_se_verifie_et_toute_alteration_est_refusee() {
 fn les_valeurs_de_n_hors_de_la_famille_sont_refusees() {
     for n in [0, 56, 59, 61, 62, 84, 120] {
         assert!(Parametres::new(n).is_none());
-        assert_eq!(pow_equix::taille_part(n), 0);
+        assert_eq!(taille_max_preuve(n, 1), 0);
         assert!(solveur().essayer(GRAINE, 0, 1, n).is_none());
         assert!(!verifier_preuve(GRAINE, 1, 1, &[0; 36], n));
     }
@@ -340,10 +417,12 @@ fn les_plus_grands_n_resolvent_et_verifient() {
         let (parts, _) = solveur.prouver(GRAINE, 1, 1, 0, n).expect("preuve");
         assert!(verifier_preuve(GRAINE, 1, 1, &parts, n));
         let parametres = Parametres::new(n).expect("n");
-        let indices = equihash::decoder(parametres, &parts[4..]).expect("solution");
+        let (_, solution) = decoder_preuve(&parts, 1, n).expect("preuve")[0];
+        assert_eq!(solution.len(), (n / 4 + 1) as usize);
+        let indices = equihash::decoder(parametres, solution).expect("solution");
         assert!(indices.iter().all(|&indice| (indice as usize) < parametres.elements()));
         let mut alteree = parts.clone();
-        alteree[4] ^= 1;
+        *alteree.last_mut().expect("octet") ^= 1;
         assert!(!verifier_preuve(GRAINE, 1, 1, &alteree, n));
     }
 }

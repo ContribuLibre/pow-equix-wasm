@@ -16,7 +16,8 @@
 //! - ordre canonique : à chaque nœud de l’arbre, la moitié gauche, lue de son
 //!   dernier élément vers le premier, ne dépasse pas la moitié droite lue de la
 //!   même façon (ordre lexicographique inversé, égalité permise, comme Equi-X) ;
-//! - tout indice est inférieur à `2^(c+1)`.
+//! - tout indice est inférieur à `2^(c+1)` : il tient sur `c + 1` bits, et la
+//!   solution rangée bit à bit sur exactement `c + 1` octets.
 
 use hashx::{HashX, HashXBuilder, RuntimeOption};
 use std::cmp::Ordering;
@@ -82,10 +83,15 @@ impl Parametres {
         self.seaux() * CAPACITE
     }
 
-    /// Octets d’une solution sérialisée : 8 × u16 pour n = 60 (format
-    /// d’Equi-X), 8 × u32 au-delà.
+    /// Bits d’un indice : c + 1.
+    pub fn bits_indice(&self) -> u32 {
+        self.bits_etage() + 1
+    }
+
+    /// Octets d’une solution rangée : 8 indices de c + 1 bits, soit c + 1
+    /// octets (16 pour n = 60, format d’Equi-X ; 21 pour n = 80).
     pub fn taille_solution(&self) -> usize {
-        if self.n == N_EQUIX { 16 } else { 32 }
+        self.bits_indice() as usize
     }
 
     /// Les valeurs HashX dépassent-elles 64 bits ?
@@ -196,28 +202,37 @@ pub fn solution_valide(hashx: &HashX, parametres: Parametres, indices: &Solution
     sommes_nulles(&valeurs, parametres.n()).is_some()
 }
 
-/// Sérialise une solution : u16 petit-boutistes pour n = 60, u32 au-delà.
+/// Range une solution bit à bit : l’indice k occupe les bits `k·b` à
+/// `k·b + b − 1` d’un flux petit-boutiste (b = c + 1). Pour n = 60 (b = 16),
+/// c’est exactement 8 × u16 petit-boutistes, la forme d’Equi-X.
 pub fn encoder(parametres: Parametres, indices: &Solution) -> Vec<u8> {
-    let mut octets = Vec::with_capacity(parametres.taille_solution());
-    for &indice in indices {
-        if parametres.n() == N_EQUIX {
-            octets.extend_from_slice(&(indice as u16).to_le_bytes());
-        } else {
-            octets.extend_from_slice(&indice.to_le_bytes());
+    let bits = parametres.bits_indice() as usize;
+    let mut octets = vec![0u8; parametres.taille_solution()];
+    for (rang, &indice) in indices.iter().enumerate() {
+        for bit in 0..bits {
+            if (indice >> bit) & 1 == 1 {
+                let position = rang * bits + bit;
+                octets[position / 8] |= 1 << (position % 8);
+            }
         }
     }
     octets
 }
 
-/// Lit une solution sérialisée, ou `None` si sa taille ne correspond pas à n.
+/// Lit une solution rangée, ou `None` si sa taille ne correspond pas à n.
+/// Toute suite de c + 1 octets donne 8 indices inférieurs à 2^(c+1) : la forme
+/// rangée d’une solution est unique.
 pub fn decoder(parametres: Parametres, octets: &[u8]) -> Option<Solution> {
     if octets.len() != parametres.taille_solution() {
         return None;
     }
-    let largeur = octets.len() / INDICES;
+    let bits = parametres.bits_indice() as usize;
     let mut indices = [0u32; INDICES];
-    for (indice, bloc) in indices.iter_mut().zip(octets.chunks_exact(largeur)) {
-        *indice = bloc.iter().rev().fold(0u32, |valeur, &octet| (valeur << 8) | u32::from(octet));
+    for (rang, indice) in indices.iter_mut().enumerate() {
+        for bit in 0..bits {
+            let position = rang * bits + bit;
+            *indice |= u32::from((octets[position / 8] >> (position % 8)) & 1) << bit;
+        }
     }
     Some(indices)
 }

@@ -7,7 +7,7 @@
 //! des valeurs (interprétée, ou compilée en code machine avec `compilateur`),
 //! puis recherche des collisions. `--solutions` compte les solutions par défi.
 
-use pow_equix::{N_VALIDES, Parametres, Solveur, taille_part, verifier_preuve};
+use pow_equix::{N_VALIDES, Parametres, Solveur, taille_max_preuve, verifier_preuve};
 use std::time::{Duration, Instant};
 
 fn argument(nom: &str) -> Option<String> {
@@ -60,12 +60,12 @@ fn main() {
             }
         }
         let (parts, _) = solveur.prouver(graine, 1, 8, 0, n).expect("preuve");
-        assert_eq!(parts.len(), 8 * taille_part(n));
+        assert!(parts.len() <= taille_max_preuve(n, 8));
         let repetitions = 200;
         let debut = Instant::now();
         for _ in 0..repetitions {
             assert!(verifier_preuve(graine, 1, 8, &parts, n));
         }
-        println!("  vérification : {:.1} µs pour 8 parts de {} octets", debut.elapsed().as_secs_f64() * 1e6 / f64::from(repetitions), taille_part(n));
+        println!("  vérification : {:.1} µs pour 8 parts, preuve de {} octets", debut.elapsed().as_secs_f64() * 1e6 / f64::from(repetitions), parts.len());
     }
 }
