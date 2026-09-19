@@ -288,14 +288,14 @@ export function essaisAttendus(effort: number, nombre: number): number {
  * calcul, la progression donne une estimation mesurée sur l’appareil lui-même.
  */
 export const REFERENCE_MS_PAR_ESSAI = {
-  /** WebAssembly, programmes HashX compilés en WebAssembly (par défaut) : Chromium. */
-  wasmCompile: 60,
+  /** WebAssembly, programmes HashX compilés en WebAssembly (par défaut) : 35 ms dans Chromium, 50 ms sous Bun. */
+  wasmCompile: 35,
   /** WebAssembly, programmes HashX interprétés : Chromium comme Bun ou Node. */
-  wasm: 410,
-  /** JavaScript traduit, avec JIT : 3,8 s dans Chromium (1,5 s sous Node). */
+  wasm: 430,
+  /** JavaScript traduit, avec JIT : 3,8 s dans Chromium (1,5 s sous Node ou Bun). */
   js: 3_800,
   /** JavaScript traduit, sans JIT (Node --jitless) : le cas courant quand WebAssembly est désactivé. */
-  jsSansJit: 79_000,
+  jsSansJit: 76_000,
 } as const
 
 export type Execution = keyof typeof REFERENCE_MS_PAR_ESSAI
@@ -305,7 +305,7 @@ export type Execution = keyof typeof REFERENCE_MS_PAR_ESSAI
  * pas de 4 double la liste à calculer et à trier, un peu plus que le double à
  * cause des accès mémoire.
  */
-export const FACTEUR_DUREE_N: Readonly<Record<(typeof N_VALIDES)[number], number>> = { 60: 1, 64: 2.1, 68: 4.3, 72: 8.8, 76: 18, 80: 38 }
+export const FACTEUR_DUREE_N: Readonly<Record<(typeof N_VALIDES)[number], number>> = { 60: 1, 64: 2, 68: 4.4, 72: 8, 76: 16, 80: 36 }
 
 /** Durée de référence d’un essai pour cette exécution et ce n. */
 export function msParEssai(execution: Execution, n: number = N_EQUIX): number {

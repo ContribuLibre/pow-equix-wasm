@@ -1,15 +1,17 @@
-# Preuve de travail Equi-X pour le web.
+# Preuve de travail Equi-X pour le web, à mémoire réglable.
 #
-# `pow-equix` porte le format du défi, la résolution et la vérification ; il se
-# réutilise tel quel en natif (application Tauri, serveur Rust), avec le
-# compilateur HashX. `pow-equix-wasm` l’expose au navigateur, aux Web Workers et
-# aux serveurs JavaScript par une interface C minimale, sans wasm-bindgen.
+# `pow-equix` porte le format du défi, la résolution et la vérification
+# d’Equihash(n, 3) sur HashX (n = 60 : Equi-X) ; il se réutilise tel quel en
+# natif (application Tauri, serveur Rust), avec le compilateur HashX.
+# `pow-equix-wasm` l’expose au navigateur, aux Web Workers et aux serveurs
+# JavaScript par une interface C minimale, sans wasm-bindgen. `crates/hashx`
+# est une copie de hashx 0.9.1 (Arti) qui expose le programme généré.
 [workspace]
 resolver = "3"
 members = ["crates/hashx", "crates/pow-equix", "crates/pow-equix-wasm"]
 
 [workspace.package]
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.91"
 # Equi-X et HashX (projet Arti de Tor) sont sous LGPL-3.0-only.

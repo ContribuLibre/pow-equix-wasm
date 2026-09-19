@@ -1,11 +1,12 @@
 {
   "name": "pow-equix-wasm",
-  "version": "0.2.1",
-  "description": "Preuve de travail Equi-X (Tor/Arti) en WebAssembly, avec repli en JavaScript pur : un seul module qui résout dans le navigateur et vérifie côté serveur",
+  "version": "0.3.0",
+  "description": "Preuve de travail Equi-X (Tor/Arti) en WebAssembly, à mémoire réglable (Equihash(n, 3) sur HashX) et programmes HashX compilés en WebAssembly, avec repli en JavaScript pur : un seul module qui résout dans le navigateur et vérifie côté serveur",
   "keywords": [
     "proof-of-work",
     "pow",
     "equix",
+    "equihash",
     "hashx",
     "tor",
     "anti-spam",
@@ -55,6 +56,8 @@
     "test": "bun test",
     "typecheck": "bun --bun tsc --noEmit",
     "verify:reproductible": "bun scripts/verifier-reproductibilite.ts",
+    "mesure": "bun scripts/mesurer.ts",
+    "mesure:navigateur": "bun scripts/mesurer.ts --navigateur",
     "check": "bun run test:rust && bun run build && bun run typecheck && bun run test && bun run build:demo && bun run verify:reproductible",
     "prepublishOnly": "bun run check"
   },
