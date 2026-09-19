@@ -28,6 +28,16 @@ export interface TextesBanc {
     colonnesVerification: string[]
     nonRepresentatif: string
     importes: (nom: string) => string
+    reprise: (faits: number, total: number) => string
+    aucuneReprise: string
+    efface: (nombre: number) => string
+    scenarioIncomplet: (id: string, tentatives: number) => string
+    tentative: (id: string, tentative: number, maximum: number) => string
+    debitEnCours: (id: string, concurrence: number, duree: string) => string
+    calibrageDifficulte: (id: string, difficulte: number, mediane: string, cible: string) => string
+    difficultesCalibrees: (cible: string) => string
+    plafond: (retenus: number, demandes: number) => string
+    statuts: Record<'complet' | 'incomplet' | 'enCours' | 'nonCommence', string>
   }
 }
 
@@ -55,14 +65,19 @@ const fr: TextesBanc = {
     remarquesExemple: 'ex. sur secteur, autres applications fermées',
     scenarios: 'Scénarios',
     provisoire: 'Valeurs provisoires : les scénarios par défaut ne sont pas encore arbitrés. Modifie le JSON ci-dessous, ou importe un fichier de scénarios.',
-    scenariosAide: 'Liste JSON : { id, libelle, algorithme (sha256, argon2id, equix), parametres, parts, difficulte, fils (nombre ou « coeurs »), repetitions }. Difficulté : bits nuls en tête pour SHA-256 et Argon2id, effort pour Equi-X. Paramètres : Argon2id { memoireKio, iterations, parallelisme } ; Equi-X { n, compilation }.',
+    scenariosAide: 'Fichier JSON pow-equix-wasm/banc-scenarios : dureeCibleMs (médiane visée par le calibrage), dureeDebitMs (mesure du débit maximal), calibrage (machine de référence), et scenarios : { id, libelle, algorithme (sha256, argon2id, equix), parametres, parts, difficulte, fils (« coeurs » par défaut), sansParallelisation, repetitions }. Difficulté : bits nuls en tête pour SHA-256 et Argon2id, effort pour Equi-X. La mémoire se règle pour Argon2id { memoireKio, iterations, parallelisme } comme pour Equi-X { n, compilation }. Les fils sont plafonnés par la mémoire de l’appareil (Argon2id, Equi-X).',
     importerScenarios: 'Importer des scénarios…',
     exporterScenarios: 'Télécharger les scénarios',
     reinitialiser: 'Scénarios provisoires',
     rapide: 'Mode rapide (10 répétitions par scénario) : pour essayer le banc, résultats non représentatifs',
     estimation: 'Estimation',
-    calibrer: 'Calibrer (quelques secondes)',
-    estimationAide: 'D’après des durées de référence, puis d’après un calibrage sur cet appareil. Le banc de vérification s’y ajoute (3 s par configuration, sur 1 fil puis sur tous les cœurs).',
+    calibrer: 'Mesurer la vitesse (quelques secondes)',
+    exporterPartiel: 'Exporter maintenant (même partiel)',
+    effacer: 'Effacer les résultats stockés',
+    reference: 'Machine de référence',
+    referenceAide: 'Sur la machine de référence seulement : ajuste la difficulté de chaque scénario pour que la médiane d’un défi atteigne dureeCibleMs, puis fige le résultat dans le fichier de scénarios, à télécharger et à importer tel quel sur les autres machines.',
+    calibrerDifficultes: 'Calibrer les difficultés sur cette machine',
+    estimationAide: 'D’après des durées de référence, puis d’après une mesure de vitesse sur cet appareil. Pour chaque scénario : les défis seuls sur tous les cœurs (latence), puis le débit maximal (dureeDebitMs), puis le banc de vérification (3 s par configuration, sur 1 fil puis sur tous les cœurs). Chaque défi terminé est enregistré dans ce navigateur : après un plantage, relancer reprend où le banc s’était arrêté (3 tentatives au plus par scénario).',
     lancer: 'Lancer le banc',
     annuler: 'Annuler',
     progression: 'Progression',
@@ -92,10 +107,20 @@ const fr: TextesBanc = {
     termine: 'Banc terminé.',
     annule: 'Banc annulé.',
     erreur: (message) => `Erreur : ${message}`,
-    colonnesResultats: ['Scénario', 'Défis', 'Médiane', 'Moyenne', 'p5', 'p10', 'p90', 'p95', 'Min', 'Max', 'p95/p5', 'Défis en 100 s', 'Essais (moy.)', 'Vérification (méd.)', 'Taille', 'Mémoire'],
+    colonnesResultats: ['Scénario', 'Statut', 'Fils', 'Défis', 'Médiane', 'Moyenne', 'p5', 'p10', 'p90', 'p95', 'Min', 'Max', 'p95/p5', 'Défis seuls en 100 s', 'Débit maximal (défis en 100 s)', 'Essais (moy.)', 'Vérification (méd.)', 'Taille', 'Mémoire'],
     colonnesVerification: ['Algorithme', 'Paramètres', 'Fils', 'Vérifications/s'],
     nonRepresentatif: 'Mode rapide : résultats non représentatifs.',
     importes: (nom) => `Scénarios importés de « ${nom} ».`,
+    reprise: (faits, total) => `Résultats stockés pour ce fichier de scénarios : ${faits} défi(s) sur ${total}. Relancer reprend là où le banc s’était arrêté.`,
+    aucuneReprise: 'Aucun résultat stocké pour ce fichier de scénarios.',
+    efface: (nombre) => `${nombre} enregistrement(s) effacé(s).`,
+    scenarioIncomplet: (id, tentatives) => `${id} : abandonné après ${tentatives} tentative(s), marqué incomplet.`,
+    tentative: (id, tentative, maximum) => `${id} : tentative ${tentative}/${maximum}.`,
+    debitEnCours: (id, concurrence, duree) => `Débit maximal : ${id}, ${concurrence} défi(s) en parallèle pendant ${duree}…`,
+    calibrageDifficulte: (id, difficulte, mediane, cible) => `Calibrage de ${id} : difficulté ${difficulte}, médiane ${mediane} pour ${cible} visées.`,
+    difficultesCalibrees: (cible) => `Difficultés calibrées pour une médiane de ${cible} : télécharge le fichier de scénarios pour les autres machines.`,
+    plafond: (retenus, demandes) => `${retenus} (plafond mémoire, ${demandes} demandés)`,
+    statuts: { complet: 'complet', incomplet: 'incomplet', enCours: 'en cours', nonCommence: 'non commencé' },
   },
 }
 
@@ -123,14 +148,19 @@ const en: TextesBanc = {
     remarquesExemple: 'e.g. plugged in, other applications closed',
     scenarios: 'Scenarios',
     provisoire: 'Provisional values: the default scenarios are not settled yet. Edit the JSON below, or import a scenario file.',
-    scenariosAide: 'JSON list: { id, libelle, algorithme (sha256, argon2id, equix), parametres, parts, difficulte, fils (number or “coeurs”), repetitions }. Difficulty: leading zero bits for SHA-256 and Argon2id, effort for Equi-X. Parameters: Argon2id { memoireKio, iterations, parallelisme }; Equi-X { n, compilation }.',
+    scenariosAide: 'JSON file pow-equix-wasm/banc-scenarios: dureeCibleMs (median targeted by calibration), dureeDebitMs (maximum throughput measurement), calibrage (reference machine), and scenarios: { id, libelle, algorithme (sha256, argon2id, equix), parametres, parts, difficulte, fils (“coeurs” by default), sansParallelisation, repetitions }. Difficulty: leading zero bits for SHA-256 and Argon2id, effort for Equi-X. Memory is tunable for Argon2id { memoireKio, iterations, parallelisme } as for Equi-X { n, compilation }. Threads are capped by the device memory (Argon2id, Equi-X).',
     importerScenarios: 'Import scenarios…',
     exporterScenarios: 'Download scenarios',
     reinitialiser: 'Provisional scenarios',
     rapide: 'Quick mode (10 repetitions per scenario): to try the bench, results are not representative',
     estimation: 'Estimate',
-    calibrer: 'Calibrate (a few seconds)',
-    estimationAide: 'From reference durations, then from a calibration on this device. The verification bench adds to it (3 s per configuration, on 1 thread then on all cores).',
+    calibrer: 'Measure speed (a few seconds)',
+    exporterPartiel: 'Export now (even partial)',
+    effacer: 'Clear stored results',
+    reference: 'Reference machine',
+    referenceAide: 'On the reference machine only: adjusts the difficulty of each scenario so that the median challenge reaches dureeCibleMs, then freezes the result in the scenario file, to download and import as is on the other machines.',
+    calibrerDifficultes: 'Calibrate difficulties on this machine',
+    estimationAide: 'From reference durations, then from a speed measurement on this device. For each scenario: single challenges on all cores (latency), then maximum throughput (dureeDebitMs), then the verification bench (3 s per configuration, on 1 thread then on all cores). Each finished challenge is stored in this browser: after a crash, starting again resumes where the bench stopped (at most 3 attempts per scenario).',
     lancer: 'Start the bench',
     annuler: 'Cancel',
     progression: 'Progress',
@@ -160,10 +190,20 @@ const en: TextesBanc = {
     termine: 'Bench finished.',
     annule: 'Bench cancelled.',
     erreur: (message) => `Error: ${message}`,
-    colonnesResultats: ['Scenario', 'Challenges', 'Median', 'Mean', 'p5', 'p10', 'p90', 'p95', 'Min', 'Max', 'p95/p5', 'Challenges in 100 s', 'Attempts (mean)', 'Verification (median)', 'Size', 'Memory'],
+    colonnesResultats: ['Scenario', 'Status', 'Threads', 'Challenges', 'Median', 'Mean', 'p5', 'p10', 'p90', 'p95', 'Min', 'Max', 'p95/p5', 'Single challenges in 100 s', 'Maximum throughput (challenges in 100 s)', 'Attempts (mean)', 'Verification (median)', 'Size', 'Memory'],
     colonnesVerification: ['Algorithm', 'Parameters', 'Threads', 'Verifications/s'],
     nonRepresentatif: 'Quick mode: results are not representative.',
     importes: (nom) => `Scenarios imported from “${nom}”.`,
+    reprise: (faits, total) => `Stored results for this scenario file: ${faits} challenge(s) of ${total}. Starting again resumes where the bench stopped.`,
+    aucuneReprise: 'No stored results for this scenario file.',
+    efface: (nombre) => `${nombre} record(s) cleared.`,
+    scenarioIncomplet: (id, tentatives) => `${id}: abandoned after ${tentatives} attempt(s), marked incomplete.`,
+    tentative: (id, tentative, maximum) => `${id}: attempt ${tentative}/${maximum}.`,
+    debitEnCours: (id, concurrence, duree) => `Maximum throughput: ${id}, ${concurrence} challenge(s) in parallel for ${duree}…`,
+    calibrageDifficulte: (id, difficulte, mediane, cible) => `Calibrating ${id}: difficulty ${difficulte}, median ${mediane} for a target of ${cible}.`,
+    difficultesCalibrees: (cible) => `Difficulties calibrated for a median of ${cible}: download the scenario file for the other machines.`,
+    plafond: (retenus, demandes) => `${retenus} (memory cap, ${demandes} requested)`,
+    statuts: { complet: 'complete', incomplet: 'incomplete', enCours: 'in progress', nonCommence: 'not started' },
   },
 }
 

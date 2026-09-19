@@ -4,12 +4,13 @@
 import pkg from '../../package.json'
 import { descriptionAppareil, horodatage } from '../outils.ts'
 import type { Langue } from '../textes.ts'
-import { type Environnement, calibrer, configurations, debitVerification, repetition, resumer } from './executeur.ts'
+import { type Environnement, calibrer, calibrerDifficulte, configurations, debitMaximal, debitVerification, repetition, resumer } from './executeur.ts'
 import {
-  DUREE_BANC_VERIFICATION_MS, REPETITIONS_RAPIDE, SCENARIOS_PROVISOIRES, type Scenario, type Statistiques, cleConfiguration, essaisAttendusScenario,
-  estimerScenario, filsEffectifs, msParEssaiReference, validerScenarios,
+  DUREE_BANC_VERIFICATION_MS, DUREE_DEBIT_RAPIDE_MS, type FichierScenarios, REPETITIONS_RAPIDE, type Scenario, type Statistiques, TENTATIVES_MAX,
+  cleConfiguration, empreinteFichier, essaisAttendusScenario, estimerScenario, fichierProvisoire, msParEssaiReference, plafondFils, validerFichierScenarios,
 } from './scenarios.ts'
-import { type DebitVerification, type ExportBanc, FORMAT_BANC, type FicheAppareil, type ResultatScenario, VERSION_BANC } from './schema.ts'
+import { type ExportBanc, FORMAT_BANC, type FicheAppareil, type ResultatScenario, VERSION_BANC } from './schema.ts'
+import { Stockage, cleAppareil } from './stockage.ts'
 import { TEXTES_BANC } from './textes.ts'
 
 const langue: Langue = document.documentElement.lang === 'en' ? 'en' : 'fr'
@@ -103,54 +104,99 @@ const saisi = (): FicheAppareil['saisi'] => {
   return { modele: lire('modele'), processeur: lire('processeur'), gpu: lire('gpu'), ram: lire('ram'), remarques: lire('remarques') }
 }
 
-// Scénarios.
+// Scénarios : le fichier entier (durée cible, débit, calibrage, scénarios) est dans la zone de texte.
 const zone = element<HTMLTextAreaElement>('scenarios')
 const messageScenarios = element('message-scenarios')
 const rapide = element<HTMLInputElement>('rapide')
+rapide.checked = localStorage.getItem('pow-equix-banc/rapide') === '1'
+rapide.addEventListener('change', () => localStorage.setItem('pow-equix-banc/rapide', rapide.checked ? '1' : '0'))
+let fichierScenarios: FichierScenarios | null = null
+let empreinte = ''
 let scenarios: Scenario[] = []
-/** Durée d’un essai sur un fil, par configuration, mesurée au calibrage. */
-const calibrages = new Map<string, number>()
+/** Durée d’un essai sur un fil, par configuration, mesurée par « Mesurer la vitesse ». */
+const vitesses = new Map<string, number>()
+const appareil = cleAppareil(detecte.agent, JSON.stringify(detecte.ecran))
 
 const repetitionsEffectives = (scenario: Scenario): number => (rapide.checked ? Math.min(REPETITIONS_RAPIDE, scenario.repetitions) : scenario.repetitions)
-const msParEssai = (scenario: Scenario): number => calibrages.get(cleConfiguration(scenario)) ?? msParEssaiReference(scenario)
-const estimation = (scenario: Scenario): number => estimerScenario(scenario, coeurs, msParEssai(scenario), repetitionsEffectives(scenario))
+const dureeDebit = (): number => (rapide.checked ? DUREE_DEBIT_RAPIDE_MS : fichierScenarios?.dureeDebitMs ?? 0)
+const plafond = (scenario: Scenario) => plafondFils(scenario, coeurs, detecte.memoireAppareilGo)
+const msParEssai = (scenario: Scenario): number => vitesses.get(cleConfiguration(scenario)) ?? msParEssaiReference(scenario)
+const estimation = (scenario: Scenario): number => estimerScenario(scenario, plafond(scenario).retenus, msParEssai(scenario), repetitionsEffectives(scenario)) + dureeDebit()
 const dureeVerification = (): number => configurations(scenarios).length * (coeurs > 1 ? 2 : 1) * (DUREE_BANC_VERIFICATION_MS + 500)
+const stockage = (): Stockage => new Stockage(localStorage, appareil, empreinte, rapide.checked)
 
-function lireScenarios(): void {
+async function lireScenarios(): Promise<void> {
   let valeur: unknown
+  let lecture: ReturnType<typeof validerFichierScenarios>
   try {
     valeur = JSON.parse(zone.value)
+    lecture = validerFichierScenarios(valeur)
   } catch (erreur) {
-    scenarios = []
-    messageScenarios.textContent = t.scenariosInvalides(erreur instanceof Error ? erreur.message : String(erreur))
-    messageScenarios.classList.add('erreur')
-    return afficherScenarios()
+    lecture = { erreur: erreur instanceof Error ? erreur.message : String(erreur) }
   }
-  const lecture = validerScenarios(valeur)
-  scenarios = 'scenarios' in lecture ? lecture.scenarios : []
-  messageScenarios.textContent = 'scenarios' in lecture ? t.scenariosValides(scenarios.length) : t.scenariosInvalides(lecture.erreur)
-  messageScenarios.classList.toggle('erreur', 'erreur' in lecture)
+  fichierScenarios = 'fichier' in lecture ? lecture.fichier : null
+  scenarios = fichierScenarios?.scenarios ?? []
+  empreinte = fichierScenarios ? await empreinteFichier(fichierScenarios) : ''
+  if (fichierScenarios) localStorage.setItem(CLE_FICHIER, zone.value)
+  messageScenarios.textContent = fichierScenarios ? `${t.scenariosValides(scenarios.length)} (${empreinte})` : t.scenariosInvalides('erreur' in lecture ? lecture.erreur : '')
+  messageScenarios.classList.toggle('erreur', !fichierScenarios)
   afficherScenarios()
 }
 
 function afficherScenarios(): void {
-  remplirTableau(element('entete-scenarios'), element('lignes-scenarios'), t.colonnes, scenarios.map((scenario) => [
-    scenario.id, scenario.algorithme, JSON.stringify(scenario.parametres), String(scenario.parts), String(scenario.difficulte),
-    String(filsEffectifs(scenario, coeurs)), String(repetitionsEffectives(scenario)), nombres.format(essaisAttendusScenario(scenario)), duree(estimation(scenario)),
-  ]))
+  remplirTableau(element('entete-scenarios'), element('lignes-scenarios'), t.colonnes, scenarios.map((scenario) => {
+    const p = plafond(scenario)
+    return [
+      scenario.id, scenario.algorithme, JSON.stringify(scenario.parametres), String(scenario.parts), String(scenario.difficulte),
+      p.applique ? t.plafond(p.retenus, p.demandes) : String(p.retenus), String(repetitionsEffectives(scenario)), nombres.format(essaisAttendusScenario(scenario)), duree(estimation(scenario)),
+    ]
+  }))
   const total = scenarios.reduce((somme, scenario) => somme + estimation(scenario), 0) + dureeVerification()
-  element('estimation').textContent = scenarios.length ? t.estimationTotale(duree(total), scenarios.every((scenario) => calibrages.has(cleConfiguration(scenario)))) : ''
-  element<HTMLButtonElement>('lancer').disabled = scenarios.length === 0
+  element('estimation').textContent = scenarios.length ? t.estimationTotale(duree(total), scenarios.every((scenario) => vitesses.has(cleConfiguration(scenario)))) : ''
+  for (const bouton of ['lancer', 'calibrer', 'calibrer-difficultes']) element<HTMLButtonElement>(bouton).disabled = scenarios.length === 0 || enCours
+  // L’export partiel reste possible à tout moment, même pendant le banc.
+  element<HTMLButtonElement>('exporter-partiel').disabled = scenarios.length === 0
+  afficherReprise()
 }
 
-zone.value = JSON.stringify(SCENARIOS_PROVISOIRES, null, 2)
-zone.addEventListener('input', lireScenarios)
+function afficherReprise(): void {
+  if (!fichierScenarios) return
+  const magasin = stockage()
+  const faits = scenarios.reduce((somme, scenario) => somme + magasin.lire(scenario.id).repetitions.length, 0)
+  const total = scenarios.reduce((somme, scenario) => somme + repetitionsEffectives(scenario), 0)
+  element('reprise').textContent = faits ? t.reprise(faits, total) : t.aucuneReprise
+  const resultats = construireResultats()
+  if (resultats.some((resultat) => resultat.repetitions.length)) {
+    element('bloc-resultats').hidden = false
+    afficherResultats(resultats)
+  }
+}
+
+const ecrireFichier = (fichier: FichierScenarios): void => {
+  zone.value = JSON.stringify(fichier, null, 2)
+}
+// Après un plantage, la page retrouve le fichier de scénarios et la fiche saisie.
+const CLE_FICHIER = 'pow-equix-banc/fichier-en-cours'
+const CLE_FICHE = 'pow-equix-banc/fiche'
+const fichierGarde = localStorage.getItem(CLE_FICHIER)
+if (fichierGarde) zone.value = fichierGarde
+else ecrireFichier(fichierProvisoire())
+try {
+  for (const [nom, valeur] of Object.entries(JSON.parse(localStorage.getItem(CLE_FICHE) ?? '{}') as Record<string, string>)) {
+    const champ = fiche.elements.namedItem(nom) as HTMLInputElement | null
+    if (champ) champ.value = valeur
+  }
+} catch {}
+fiche.addEventListener('input', () => localStorage.setItem(CLE_FICHE, JSON.stringify(saisi())))
+zone.addEventListener('input', () => void lireScenarios())
 rapide.addEventListener('change', afficherScenarios)
 element('reinitialiser').addEventListener('click', () => {
-  zone.value = JSON.stringify(SCENARIOS_PROVISOIRES, null, 2)
-  lireScenarios()
+  ecrireFichier(fichierProvisoire())
+  void lireScenarios()
 })
-element('exporter-scenarios').addEventListener('click', () => telecharger('pow-equix-banc-scenarios.json', `${JSON.stringify(scenarios, null, 2)}\n`))
+element('exporter-scenarios').addEventListener('click', () => {
+  if (fichierScenarios) telecharger(`pow-equix-banc-scenarios_${empreinte}.json`, `${JSON.stringify(fichierScenarios, null, 2)}\n`)
+})
 const fichier = element<HTMLInputElement>('fichier-scenarios')
 element('importer-scenarios').addEventListener('click', () => fichier.click())
 fichier.addEventListener('change', async () => {
@@ -158,16 +204,16 @@ fichier.addEventListener('change', async () => {
   if (!choisi) return
   zone.value = await choisi.text()
   fichier.value = ''
-  lireScenarios()
+  await lireScenarios()
   if (scenarios.length) messageScenarios.textContent = `${t.importes(choisi.name)} ${messageScenarios.textContent}`
 })
-lireScenarios()
 
 // Exécution.
 const octetsEquix = fetch(new URL('equix.wasm', racine)).then(async (reponse) => new Uint8Array(await reponse.arrayBuffer()))
 let annulation: AbortController | undefined
+let enCours = false
 const etat = element('etat')
-const boutons = { calibrer: element<HTMLButtonElement>('calibrer'), lancer: element<HTMLButtonElement>('lancer'), annuler: element<HTMLButtonElement>('annuler') }
+const boutons = { annuler: element<HTMLButtonElement>('annuler') }
 
 async function environnement(): Promise<Environnement> {
   annulation = new AbortController()
@@ -177,18 +223,18 @@ async function environnement(): Promise<Environnement> {
   }
 }
 
-async function calibrerTout(env: Environnement): Promise<void> {
+async function mesurerVitesses(env: Environnement): Promise<void> {
   for (const scenario of configurations(scenarios)) {
-    if (calibrages.has(cleConfiguration(scenario))) continue
+    if (vitesses.has(cleConfiguration(scenario))) continue
     etat.textContent = t.calibrage(scenario.id)
-    calibrages.set(cleConfiguration(scenario), await calibrer(scenario, env, 1000))
+    vitesses.set(cleConfiguration(scenario), await calibrer(scenario, env, 1000))
     afficherScenarios()
   }
 }
 
 async function executer(travail: (env: Environnement) => Promise<void>): Promise<void> {
-  boutons.calibrer.disabled = true
-  boutons.lancer.disabled = true
+  enCours = true
+  afficherScenarios()
   boutons.annuler.hidden = false
   element('bloc-progression').hidden = false
   try {
@@ -196,87 +242,170 @@ async function executer(travail: (env: Environnement) => Promise<void>): Promise
   } catch (erreur) {
     etat.textContent = annulation?.signal.aborted ? t.annule : t.erreur(erreur instanceof Error ? erreur.message : String(erreur))
   } finally {
-    boutons.calibrer.disabled = false
-    boutons.lancer.disabled = scenarios.length === 0
+    enCours = false
     boutons.annuler.hidden = true
+    afficherScenarios()
   }
 }
 
 boutons.annuler.addEventListener('click', () => annulation?.abort())
-boutons.calibrer.addEventListener('click', () => executer(async (env) => {
-  await calibrerTout(env)
+element('calibrer').addEventListener('click', () => executer(async (env) => {
+  await mesurerVitesses(env)
   etat.textContent = t.calibre
 }))
 
-let dernierExport = ''
+// Mode « calibrer » : sur la machine de référence, difficultés ajustées puis figées dans le fichier.
+element('calibrer-difficultes').addEventListener('click', () => executer(async (env) => {
+  const source = fichierScenarios!
+  const cible = source.dureeCibleMs
+  const calibres: Scenario[] = []
+  for (const scenario of source.scenarios) {
+    const resultat = await calibrerDifficulte(scenario, plafond(scenario).retenus, cible, env, {
+      onTour: (difficulte, mediane) => { etat.textContent = t.calibrageDifficulte(scenario.id, difficulte, duree(mediane), duree(cible)) },
+    })
+    calibres.push({ ...scenario, difficulte: resultat.difficulte, calibrage: { medianeMs: Math.round(resultat.medianeMs), repetitions: resultat.defis } } as Scenario)
+  }
+  const saisie = saisi()
+  ecrireFichier({ ...source, scenarios: calibres, calibrage: { date: new Date().toISOString(), appareil: [saisie.modele, saisie.processeur].filter(Boolean).join(', ') || descriptionAppareil(detecte.agent), agent: detecte.agent } })
+  await lireScenarios()
+  etat.textContent = t.difficultesCalibrees(duree(cible))
+}))
 
-boutons.lancer.addEventListener('click', () => executer(async (env) => {
-  const liste = scenarios.map((scenario) => ({ ...scenario, repetitions: repetitionsEffectives(scenario) }))
-  const modeRapide = rapide.checked
-  await calibrerTout(env)
+/** Résultats de chaque scénario d’après le stockage : complets, partiels ou non commencés. */
+function construireResultats(): ResultatScenario[] {
+  const magasin = stockage()
+  return scenarios.map((scenario) => {
+    const etatScenario = magasin.lire(scenario.id)
+    const lance = { ...scenario, repetitions: repetitionsEffectives(scenario) } as Scenario
+    return resumer(lance, etatScenario.repetitions, plafond(scenario), etatScenario.msParEssai ?? vitesses.get(cleConfiguration(scenario)) ?? null, {
+      statut: etatScenario.statut, tentatives: etatScenario.tentatives, erreurs: etatScenario.erreurs, debitMaximal: etatScenario.debitMaximal,
+    })
+  })
+}
+
+function exporter(): string {
+  const resultats = construireResultats()
+  const exporte: ExportBanc = {
+    format: FORMAT_BANC, version: VERSION_BANC, date: new Date().toISOString(), paquet: pkg.version, rapide: rapide.checked,
+    partiel: resultats.some((resultat) => resultat.statut !== 'complet'),
+    fichierScenarios: { ...fichierScenarios!, empreinte },
+    appareil: { detecte, saisi: saisi() }, scenarios: resultats, verification: stockage().verifications(),
+  }
+  const texte = `${JSON.stringify(exporte, null, 2)}\n`
+  element<HTMLTextAreaElement>('export').value = texte
+  return texte
+}
+
+element('lancer').addEventListener('click', () => executer(async (env) => {
+  const magasin = stockage()
+  await mesurerVitesses(env)
   const debut = performance.now()
-  const prevu = liste.reduce((somme, scenario) => somme + estimation(scenario), 0) + dureeVerification()
+  const prevu = scenarios.reduce((somme, scenario) => somme + estimation(scenario), 0) + dureeVerification()
   let fait = 0
   const barre = element<HTMLProgressElement>('barre')
   barre.max = prevu
-  const avancer = (): void => {
+  const avancer = (duree_: number): void => {
+    fait += duree_
     barre.value = Math.min(fait, prevu)
     const ecoule = performance.now() - debut
     element('temps').textContent = t.progression(duree(ecoule), duree(fait > 0 ? Math.max(0, (prevu - fait) * ecoule / fait) : prevu))
   }
-  const resultats: ResultatScenario[] = []
   element('bloc-resultats').hidden = false
-  for (const [rang, scenario] of liste.entries()) {
-    const repetitions = []
-    const parRepetition = estimation(scenario) / scenario.repetitions
-    for (let numero = 1; numero <= scenario.repetitions; numero++) {
-      etat.textContent = t.enCours(scenario.id, rang + 1, liste.length, numero, scenario.repetitions)
-      repetitions.push(await repetition(scenario, env))
-      fait += parRepetition
-      avancer()
+  for (const [rang, scenario] of scenarios.entries()) {
+    const repetitions = repetitionsEffectives(scenario)
+    const p = plafond(scenario)
+    const parRepetition = (estimation(scenario) - dureeDebit()) / repetitions
+    // Jusqu’à 3 tentatives ; une annulation n’en consomme pas.
+    while (magasin.commencerTentative(scenario.id)) {
+      const courant = magasin.lire(scenario.id)
+      etat.textContent = t.tentative(scenario.id, courant.tentatives, TENTATIVES_MAX)
+      try {
+        magasin.modifier(scenario.id, (e) => { e.msParEssai = vitesses.get(cleConfiguration(scenario)) ?? null })
+        for (let numero = magasin.lire(scenario.id).repetitions.length + 1; numero <= repetitions; numero++) {
+          etat.textContent = t.enCours(scenario.id, rang + 1, scenarios.length, numero, repetitions)
+          const faite = await repetition(scenario, p.retenus, env)
+          magasin.modifier(scenario.id, (e) => { e.repetitions.push(faite) })
+          avancer(parRepetition)
+          afficherResultats(construireResultats())
+        }
+        if (!magasin.lire(scenario.id).debitMaximal) {
+          etat.textContent = t.debitEnCours(scenario.id, p.retenus, duree(dureeDebit()))
+          const debit = await debitMaximal(scenario, p.retenus, env, dureeDebit())
+          magasin.modifier(scenario.id, (e) => { e.debitMaximal = debit })
+          avancer(dureeDebit())
+        }
+        magasin.modifier(scenario.id, (e) => { e.statut = 'complet' })
+        afficherResultats(construireResultats())
+      } catch (erreur) {
+        if (annulation?.signal.aborted) {
+          magasin.rendreTentative(scenario.id)
+          throw erreur
+        }
+        const apres = magasin.echec(scenario.id, erreur instanceof Error ? erreur.message : String(erreur))
+        if (apres.statut === 'incomplet') etat.textContent = t.scenarioIncomplet(scenario.id, apres.tentatives)
+      }
     }
-    resultats.push(resumer(scenario, repetitions, coeurs, calibrages.get(cleConfiguration(scenario)) ?? null))
-    afficherResultats(resultats, [], modeRapide)
   }
-  const debits: DebitVerification[] = []
-  for (const scenario of configurations(liste)) {
+  // Débit de vérification : une fois par configuration et nombre de fils (repris s’il est déjà stocké).
+  const deja = magasin.verifications()
+  for (const scenario of configurations(scenarios)) {
     for (const fils of coeurs > 1 ? [1, coeurs] : [1]) {
+      if (deja.some((d) => d.fils === fils && d.algorithme === scenario.algorithme && JSON.stringify(d.parametres) === JSON.stringify(scenario.parametres))) continue
       etat.textContent = t.verificationEnCours(`${scenario.algorithme} ${JSON.stringify(scenario.parametres)}`, fils)
-      debits.push(await debitVerification(scenario, fils, env, DUREE_BANC_VERIFICATION_MS))
-      fait += DUREE_BANC_VERIFICATION_MS + 500
-      avancer()
-      afficherResultats(resultats, debits, modeRapide)
+      magasin.ajouterVerification(await debitVerification(scenario, fils, env, DUREE_BANC_VERIFICATION_MS))
+      avancer(DUREE_BANC_VERIFICATION_MS + 500)
+      afficherResultats(construireResultats())
     }
   }
-  const exporte: ExportBanc = {
-    format: FORMAT_BANC, version: VERSION_BANC, date: new Date().toISOString(), paquet: pkg.version, rapide: modeRapide,
-    appareil: { detecte, saisi: saisi() }, scenarios: resultats, verification: debits,
-  }
-  dernierExport = `${JSON.stringify(exporte, null, 2)}\n`
-  element<HTMLTextAreaElement>('export').value = dernierExport
+  dernierExport = exporter()
   etat.textContent = t.termine
 }))
 
-function afficherResultats(resultats: ResultatScenario[], debits: DebitVerification[], modeRapide: boolean): void {
+let dernierExport = ''
+
+/** Nom daté à la seconde ; « partiel » tant que tous les scénarios ne sont pas complets. */
+function nomExport(texte: string): string {
+  const date = new Date()
+  const partiel = (JSON.parse(texte) as ExportBanc).partiel ? '_partiel' : ''
+  return `pow-equix-banc_${descriptionAppareil(navigator.userAgent)}_${horodatage(date)}${String(date.getSeconds()).padStart(2, '0')}${partiel}.json`
+}
+
+element('exporter-partiel').addEventListener('click', () => {
+  dernierExport = exporter()
+  element('bloc-resultats').hidden = false
+  telecharger(nomExport(dernierExport), dernierExport)
+})
+element('effacer').addEventListener('click', () => {
+  element('reprise').textContent = t.efface(Stockage.toutEffacer(localStorage))
+  element('bloc-resultats').hidden = true
+})
+
+function afficherResultats(resultats: ResultatScenario[]): void {
   const avertissement = element('avertissement-rapide')
-  avertissement.hidden = !modeRapide
+  avertissement.hidden = !rapide.checked
   avertissement.textContent = t.nonRepresentatif
   const d = (stats: Statistiques, cle: keyof Statistiques): string => duree(stats[cle] as number)
   remplirTableau(element('entete-resultats'), element('lignes-resultats'), t.colonnesResultats, resultats.map((resultat) => {
     const s = resultat.statistiques.dureeMs
-    const memoire = resultat.repetitions[0] ? `${taille(resultat.repetitions[0].memoireOctets)}${resultat.repetitions[0].memoire === 'estimee' ? ' ≈' : ''}` : ''
+    const premiere = resultat.repetitions[0]
+    const memoire = premiere ? `${taille(premiere.memoireOctets)}${premiere.memoire === 'estimee' ? ' ≈' : ''}` : ''
+    const fils = resultat.plafond.applique ? t.plafond(resultat.plafond.retenus, resultat.plafond.demandes) : String(resultat.filsEffectifs)
+    if (!resultat.repetitions.length) return [resultat.scenario.id, t.statuts[resultat.statut], fils, '0', ...Array(15).fill('')]
     return [
-      resultat.scenario.id, String(s.nombre), d(s, 'mediane'), d(s, 'moyenne'), d(s, 'p5'), d(s, 'p10'), d(s, 'p90'), d(s, 'p95'), d(s, 'min'), d(s, 'max'),
+      resultat.scenario.id, t.statuts[resultat.statut], fils, String(s.nombre), d(s, 'mediane'), d(s, 'moyenne'), d(s, 'p5'), d(s, 'p10'), d(s, 'p90'), d(s, 'p95'), d(s, 'min'), d(s, 'max'),
       nombres.format(s.rapportP95P5), `${resultat.debit100s.mesure ?? '—'} (≈ ${nombres.format(resultat.debit100s.extrapole)})`,
+      resultat.debitMaximal ? nombres.format(resultat.debitMaximal.parCentSecondes) : '—',
       nombres.format(resultat.statistiques.essais.moyenne), duree(resultat.statistiques.verificationMs.mediane), taille(resultat.statistiques.tailleOctets.moyenne), memoire,
     ]
   }))
-  remplirTableau(element('entete-verification'), element('lignes-verification'), t.colonnesVerification, debits.map((debit) => [
+  remplirTableau(element('entete-verification'), element('lignes-verification'), t.colonnesVerification, stockage().verifications().map((debit) => [
     debit.algorithme, JSON.stringify(debit.parametres), String(debit.fils), nombres.format(debit.parSeconde),
   ]))
 }
 
 element('telecharger').addEventListener('click', () => {
-  if (!dernierExport) return
-  telecharger(`pow-equix-banc_${descriptionAppareil(navigator.userAgent)}_${horodatage(new Date())}.json`, dernierExport)
+  if (!dernierExport) dernierExport = exporter()
+  telecharger(nomExport(dernierExport), dernierExport)
 })
+
+void lireScenarios()
