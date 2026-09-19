@@ -201,11 +201,6 @@ export async function empreinteFichier(fichier: FichierScenarios): Promise<strin
   return Array.from(octets.subarray(0, 8), (octet) => octet.toString(16).padStart(2, '0')).join('')
 }
 
-/**
- * Budget mémoire du calcul quand `navigator.deviceMemory` est inconnu (Firefox,
- * Safari) : PROVISOIRE, prudent pour ne pas faire tuer l’onglet d’un téléphone.
- */
-export const BUDGET_MEMOIRE_INCONNU_MIO = 256
 /** Part de la mémoire de l’appareil que le banc s’autorise, comme `filsAdaptatifs`. */
 export const PART_MEMOIRE = 1 / 32
 
@@ -221,22 +216,32 @@ export interface Plafond {
   demandes: number
   /** Fils retenus. */
   retenus: number
-  /** Vrai si le plafond mémoire a réduit le nombre de fils. */
+  /** Vrai si un plafond (mémoire annoncée ou garde-fou) a réduit le nombre de fils. */
   applique: boolean
-  /** Budget mémoire retenu, en Mio, et sa source. */
-  budgetMio: number
-  source: 'deviceMemory' | 'inconnue'
+  /** Budget mémoire d’après `navigator.deviceMemory` (1/32), en Mio, ou null s’il est inconnu. */
+  budgetMio: number | null
+  /** Ce qui a limité les fils : la mémoire annoncée, le garde-fou après plantage, ou rien. */
+  source: 'deviceMemory' | 'garde' | null
+  /** Limite du garde-fou pour ce réglage mémoire sur cet appareil, et sa raison. */
+  limiteGarde: number | null
+  raisonGarde: string | null
 }
 
-/** Fils d’un scénario sur cet appareil, sous le plafond mémoire (Argon2id, Equi-X). */
-export function plafondFils(scenario: Scenario, coeurs: number, memoireAppareilGo: number | null): Plafond {
+/**
+ * Fils d’un scénario sur cet appareil : tous les cœurs (ou 1 sans
+ * parallélisation), sous le plafond de la mémoire annoncée (1/32 de
+ * `navigator.deviceMemory`, Argon2id et Equi-X) s’il est connu, et sous la
+ * limite du garde-fou (plantage constaté) s’il y en a une.
+ */
+export function plafondFils(scenario: Scenario, coeurs: number, memoireAppareilGo: number | null, garde: { limite: number | null; raison: string | null } = { limite: null, raison: null }): Plafond {
   const demandes = scenario.sansParallelisation ? 1 : scenario.fils === undefined || scenario.fils === 'coeurs' ? Math.max(1, coeurs) : scenario.fils
-  const source = memoireAppareilGo ? 'deviceMemory' : 'inconnue'
-  const budgetMio = memoireAppareilGo ? memoireAppareilGo * 1024 * PART_MEMOIRE : BUDGET_MEMOIRE_INCONNU_MIO
+  const budgetMio = memoireAppareilGo ? memoireAppareilGo * 1024 * PART_MEMOIRE : null
   const parFil = mioParFil(scenario)
-  const plafond = parFil > 0 ? Math.max(1, Math.floor(budgetMio / parFil)) : Number.POSITIVE_INFINITY
-  const retenus = Math.min(demandes, plafond)
-  return { demandes, retenus, applique: retenus < demandes, budgetMio, source }
+  const plafondMemoire = budgetMio !== null && parFil > 0 ? Math.max(1, Math.floor(budgetMio / parFil)) : Number.POSITIVE_INFINITY
+  const plafondGarde = parFil > 0 && garde.limite !== null ? garde.limite : Number.POSITIVE_INFINITY
+  const retenus = Math.min(demandes, plafondMemoire, plafondGarde)
+  const source = retenus >= demandes ? null : plafondGarde <= plafondMemoire ? 'garde' : 'deviceMemory'
+  return { demandes, retenus, applique: retenus < demandes, budgetMio, source, limiteGarde: parFil > 0 ? garde.limite : null, raisonGarde: parFil > 0 ? garde.raison : null }
 }
 
 /**

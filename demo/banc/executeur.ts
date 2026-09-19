@@ -3,6 +3,7 @@
 // vérification de la preuve ; calibrage et débit de vérification.
 
 import { ModuleEquix, resoudre } from '../../src/index.ts'
+import { type Garde, cleMemoire, paliers } from './garde.ts'
 import { tailleNonces, verifierNonces } from './moteurs.ts'
 import {
   type ParametresArgon2id, type Plafond, REGULARITE_MAX, type Scenario, ajusterDifficulte, centile, cleConfiguration, debit100s, difficultePourDuree, statistiques,
@@ -254,6 +255,48 @@ export async function calibrerDifficulte(
 /** Configuration d’un Web Worker pour un scénario (calibrage, vérification). */
 function configurer(travailleur: Worker, scenario: Scenario, env: Environnement): void {
   travailleur.postMessage({ type: 'config', algorithme: scenario.algorithme, parametres: scenario.parametres, graine: graineAleatoire(), difficulte: 0, octetsEquix: env.octetsEquix.slice().buffer })
+}
+
+/**
+ * Monte par paliers (1, 2, 4, 8… jusqu’à `fils`) : pour chaque palier pas
+ * encore validé sur cet appareil, la tentative est notée, `palier` Web Workers
+ * font chacun un essai en même temps (la mémoire de chaque fil est allouée),
+ * puis la réussite est notée. Un plantage de l’onglet laisse la tentative
+ * ouverte ; une erreur rattrapable limite aussitôt le réglage au palier précédent.
+ * Renvoie le plus grand palier réussi (≤ `fils`).
+ */
+export async function monterParPaliers(scenario: Scenario, fils: number, env: Environnement, garde: Garde, onPalier: (fils: number) => void = () => {}): Promise<number> {
+  const memoire = cleMemoire(scenario)
+  if (memoire === null) return fils
+  let atteint = 0
+  for (const palier of paliers(fils)) {
+    if (garde.reussis(memoire).includes(palier)) {
+      atteint = palier
+      continue
+    }
+    onPalier(palier)
+    garde.commencer(memoire, palier)
+    const travailleurs = Array.from({ length: palier }, () => env.creerTravailleur())
+    try {
+      await Promise.all(travailleurs.map((travailleur) => {
+        configurer(travailleur, scenario, env)
+        travailleur.postMessage({ type: 'palier' })
+        return reponse(travailleur, 'palier', env.signal)
+      }))
+      garde.reussir(memoire, palier)
+      atteint = palier
+    } catch (erreur) {
+      if (env.signal?.aborted) {
+        garde.abandonner(memoire)
+        throw erreur
+      }
+      garde.echouer(memoire, palier, erreur instanceof Error ? erreur.message : String(erreur))
+      return Math.max(1, atteint)
+    } finally {
+      for (const travailleur of travailleurs) travailleur.terminate()
+    }
+  }
+  return atteint
 }
 
 /** Durée d’un essai sur un fil, mesurée pendant ≈ `dureeMs` après un essai de mise en température. */

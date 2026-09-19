@@ -3,10 +3,11 @@
 //   { type: 'config', algorithme, parametres, graine, difficulte, octetsEquix? }
 //   { type: 'plage', debut, fin }      essaie les nonces [debut, fin) (SHA-256, Argon2id)
 //   { type: 'calibrer', dureeMs }      essaie des nonces pendant ≈ dureeMs : durée d’un essai
+//   { type: 'palier' }                 un seul essai : la mémoire d’un fil est allouée (garde-fou)
 //   { type: 'verifier', dureeMs }      vérifie une part valide en boucle : débit de vérification
 //
 // Réponses : { type: 'plage', debut, fin, trouves, essais, dureeMs },
-// { type: 'calibrage', essais, dureeMs }, { type: 'verifications', nombre, dureeMs },
+// { type: 'calibrage', essais, dureeMs }, { type: 'palier' }, { type: 'verifications', nombre, dureeMs },
 // { type: 'erreur', message }.
 
 import { ModuleEquix, encoderPreuve } from '../../src/index.ts'
@@ -57,6 +58,9 @@ async function traiter(message: { type: string; [cle: string]: unknown }): Promi
     let essais = 0
     while (essais < 3 || performance.now() - depart < duree) await unEssai(essais++)
     portee.postMessage({ type: 'calibrage', essais, dureeMs: performance.now() - depart })
+  } else if (message.type === 'palier') {
+    await unEssai(0)
+    portee.postMessage({ type: 'palier' })
   } else if (message.type === 'verifier') {
     const duree = message.dureeMs as number
     let verifier: () => Promise<boolean> | boolean

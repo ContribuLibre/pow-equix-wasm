@@ -15,12 +15,14 @@ export interface EtatScenario {
   repetitions: Repetition[]
   debitMaximal: DebitMaximal | null
   msParEssai: number | null
+  /** Fils des répétitions stockées : si la limite change (plantage), elles sont recommencées. */
+  fils: number | null
 }
 
 export type Support = Pick<Storage, 'getItem' | 'setItem' | 'removeItem' | 'key' | 'length'>
 
 export function etatVide(): EtatScenario {
-  return { statut: 'nonCommence', tentatives: 0, erreurs: [], repetitions: [], debitMaximal: null, msParEssai: null }
+  return { statut: 'nonCommence', tentatives: 0, erreurs: [], repetitions: [], debitMaximal: null, msParEssai: null, fils: null }
 }
 
 /** Identifiant d’appareil pour les clés : agent et écran, résumés. */
@@ -103,6 +105,22 @@ export class Stockage {
 
   ajouterVerification(debit: DebitVerification): void {
     this.ecrireJson('verification', [...this.verifications(), debit])
+  }
+
+  /**
+   * Les répétitions stockées ont-elles été faites avec `fils` fils ? Sinon
+   * (limite abaissée après un plantage), elles sont écartées pour ne pas mêler
+   * deux réglages, et le changement est consigné.
+   */
+  alignerFils(id: string, fils: number): void {
+    this.modifier(id, (etat) => {
+      if (etat.fils !== null && etat.fils !== fils && (etat.repetitions.length || etat.debitMaximal)) {
+        etat.erreurs.push(`${etat.repetitions.length} défi(s) à ${etat.fils} fils écartés : repris à ${fils} fil(s)`)
+        etat.repetitions = []
+        etat.debitMaximal = null
+      }
+      etat.fils = fils
+    })
   }
 
   /**
