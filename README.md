@@ -505,27 +505,59 @@ standardisé, qui fait partie de la démo seulement (rien n’en entre dans
   réglables, un essai = une empreinte de `graine ‖ nonce`, réussi selon les
   bits nuls en tête) ; Equi-X par la bibliothèque elle-même. Tous en plusieurs
   parts, sur 1 à N Web Workers, annulables, avec progression.
-- **Scénario** : `{ id, libelle, algorithme, parametres, parts, difficulte,
-  fils, repetitions }`, en JSON modifiable dans la page, importable et
-  exportable. Au moins 100 répétitions par scénario ; un mode rapide (10)
-  sert à essayer le banc et marque les résultats comme non représentatifs.
-  **Les scénarios par défaut sont provisoires**, en attente d’arbitrage.
-- **Par répétition** : durée du défi (Web Workers créés compris, comme une
-  page qui calcule une preuve), essais, mémoire (mesurée pour Equi-X, estimée
-  pour Argon2id et SHA-256), taille de la preuve, puis vérification (temps,
-  mémoire, validité). **Statistiques** : médiane, moyenne, p5, p10, p90,
-  p95, min, max, rapport p95/p5, défis résolus en 100 s (extrapolé de la
-  moyenne, et mesuré quand les répétitions enchaînées couvrent 100 s).
+- **Fichier de scénarios** (`pow-equix-wasm/banc-scenarios`, modifiable dans la
+  page, importable et exportable tel quel) : durée cible d’un défi
+  (`dureeCibleMs`, médiane visée), durée de la mesure du débit maximal
+  (`dureeDebitMs`), machine de référence du calibrage, et scénarios
+  `{ id, libelle, algorithme, parametres, parts, difficulte, fils,
+  sansParallelisation, repetitions }`. Son empreinte (SHA-256) identifie les
+  résultats. **Les valeurs par défaut sont provisoires**, en attente
+  d’arbitrage ; Argon2id y figure à deux réglages de mémoire (16 et 64 Mio,
+  t = 1, p = 1) : sa mémoire se règle, comme celle d’Equi-X (n).
+- **Mode « calibrer »** (machine de référence seulement) : pour chaque
+  scénario, difficulté estimée d’après la vitesse mesurée, puis ajustée sur
+  des défis réels jusqu’à ce que la médiane approche la durée cible, et figée
+  dans le fichier de scénarios (avec la machine et la date), que les autres
+  machines importent tel quel. SHA-256 et Argon2id ne se règlent que par bits
+  entiers : leur médiane reste à un facteur √2 près de la cible.
+- **Fils** : tous les cœurs par défaut, un seul pour les lignes
+  `sansParallelisation`. Pour Argon2id et Equi-X, un plafond mémoire évite de
+  faire tuer l’onglet d’un téléphone : 1/32 de `navigator.deviceMemory`, ou
+  256 Mio (provisoire) quand il est inconnu ; l’export indique le plafond
+  appliqué (`plafond`), et l’agrégation le signale.
+- **Par scénario** : au moins 100 répétitions (un mode rapide, 10, marque les
+  résultats comme non représentatifs). Chaque répétition est un défi seul
+  sur tous les fils permis, ce que vit l’utilisateur (**latence**) : durée,
+  essais, mémoire (mesurée pour Equi-X, estimée pour Argon2id et SHA-256),
+  taille de la preuve, puis vérification (temps, mémoire, validité).
+  **Statistiques** : médiane, moyenne, p5, p10, p90, p95, min, max, rapport
+  p95/p5. Puis le **débit maximal** de l’appareil : autant de défis en
+  parallèle que de fils permis, un fil chacun (sans les essais perdus d’un
+  défi court réparti sur plusieurs fils), enchaînés pendant `dureeDebitMs`,
+  ramenés à « défis résolus en 100 s » (mesure directe si `dureeDebitMs`
+  vaut 100 000).
+- **Reprise** : chaque défi terminé est enregistré dans `localStorage` (par
+  appareil, fichier de scénarios et mode), comme le fichier de scénarios et la
+  fiche saisie ; après un plantage, relancer reprend où le banc s’était arrêté.
+  Au plus 3 tentatives par scénario (un plantage ou une erreur en consomme
+  une, pas une annulation), puis le scénario est marqué incomplet et le banc
+  passe au suivant. Export partiel à tout moment ; bouton pour effacer les
+  résultats stockés.
 - **Débit de vérification** : parts valides vérifiées par seconde, par
-  configuration, sur 1 fil et sur tous les cœurs (ligne « résistance au DoS »).
+  configuration, sur 1 fil et sur tous les cœurs (résistance au déni de service).
 - **Fiche de l’appareil** : navigateur, cœurs, `deviceMemory`, écran détectés,
   et champs libres (modèle, processeur, GPU, RAM, remarques).
 - **Estimation** de la durée totale avant de lancer, d’après des références,
-  puis d’après un calibrage de quelques secondes sur l’appareil.
-- **Export** JSON complet, schéma `pow-equix-wasm/banc` version 1, décrit par
-  les types de `demo/banc/schema.ts` ; `bun scripts/agreger-banc.ts
-  fichiers.json… [--json]` en réunit plusieurs et produit les lignes du
-  tableau (hors lignes « 10 000 € » et « 1 000 000 € », à extrapoler).
+  puis d’après une mesure de vitesse de quelques secondes sur l’appareil.
+- **Export** JSON complet, schéma `pow-equix-wasm/banc` version 2, décrit par
+  les types de `demo/banc/schema.ts`. `bun scripts/agreger-banc.ts
+  fichiers.json… [--attaque materiels.json] [--json]` en réunit plusieurs et
+  produit les lignes du tableau : débit maximal par appareil (et latence à
+  part), écart d’usage (meilleur appareil ÷ plus faible), écarts d’attaque
+  pour chaque matériel du fichier `--attaque` (format
+  `pow-equix-wasm/banc-attaque`, débits extrapolés à 10 000 € et 1 000 000 €),
+  rapportés au pire appareil et à l’appareil médian, et résistance au déni de
+  service (vérifications par seconde, tous les cœurs).
 - **Banc natif** (sans navigateur, pour les extrapolations) :
   `cargo run --release -p pow-equix --features compilateur --example mesure --
   20 --n 60,72,80 --execution compile,interprete --fils 1,8 --json` : essais

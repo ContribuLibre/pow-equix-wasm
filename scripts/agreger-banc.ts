@@ -2,10 +2,23 @@
 // format `pow-equix-wasm/banc`, voir demo/banc/schema.ts) en valeurs du tableau
 // comparatif du README (hors lignes « 10 000 € » et « 1 000 000 € », extrapolées ensuite).
 //
-//   bun scripts/agreger-banc.ts mesures/*.json [--json]
+//   bun scripts/agreger-banc.ts mesures/*.json [--attaque materiels.json] [--json]
 //
 // Colonnes : un scénario (même `id`) par colonne, dans l’ordre de première
 // apparition. Lignes : celles du tableau, puis une ligne par appareil.
+//
+// Débits : « défis résolus en 100 s » est le débit maximal de chaque appareil
+// (défis en parallèle, un fil chacun) ; la latence d’un défi seul sur tous les
+// cœurs, ce que vit l’utilisateur, figure à part.
+//
+// Écarts : d’usage = débit du meilleur appareil ÷ débit du plus faible ;
+// d’attaque = débit d’un matériel d’attaque (fichier --attaque, valeurs
+// extrapolées) ÷ débit du pire appareil, et ÷ débit de l’appareil médian ;
+// résistance au déni de service = vérifications par seconde, tous les cœurs.
+//
+// Fichier --attaque (format pow-equix-wasm/banc-attaque, version 1) :
+//   { "format": "pow-equix-wasm/banc-attaque", "version": 1,
+//     "materiels": [ { "nom": "10 000 €", "description": "…", "debits": { "<id de scénario>": <défis en 100 s> } }, … ] }
 
 import { readFileSync } from 'node:fs'
 import { basename } from 'node:path'
@@ -16,6 +29,15 @@ import { type ExportBanc, FORMAT_BANC, type ResultatScenario, VERSION_BANC } fro
 
 export interface Ligne { libelle: string; valeurs: Array<string | null> }
 export interface Agregat { colonnes: Array<{ id: string; libelle: string; algorithme: Scenario['algorithme'] }>; lignes: Ligne[]; avertissements: string[] }
+
+export const FORMAT_ATTAQUE = 'pow-equix-wasm/banc-attaque'
+export interface MaterielAttaque { nom: string; description?: string; debits: Record<string, number> }
+
+export function lireAttaque(texte: string, nom: string): MaterielAttaque[] {
+  const contenu = JSON.parse(texte) as { format?: string; version?: number; materiels?: MaterielAttaque[] }
+  if (contenu.format !== FORMAT_ATTAQUE || contenu.version !== 1 || !Array.isArray(contenu.materiels)) throw new Error(`${nom} : format ${FORMAT_ATTAQUE} version 1 attendu`)
+  return contenu.materiels
+}
 
 export function lireExport(texte: string, nom: string): ExportBanc {
   const contenu = JSON.parse(texte) as Partial<ExportBanc>
@@ -49,16 +71,26 @@ function duree(ms: number): string {
 
 const nombre = (valeur: number): string => (valeur >= 100 ? Math.round(valeur).toLocaleString('fr-FR') : valeur.toFixed(1).replace('.', ','))
 
-export function agreger(fichiers: ExportBanc[]): Agregat {
+export function agreger(fichiers: ExportBanc[], attaques: MaterielAttaque[] = []): Agregat {
   const avertissements: string[] = []
-  for (const fichier of fichiers) if (fichier.rapide) avertissements.push(`${nomAppareil(fichier)} : mode rapide, résultats non représentatifs`)
+  for (const fichier of fichiers) {
+    if (fichier.rapide) avertissements.push(`${nomAppareil(fichier)} : mode rapide, résultats non représentatifs`)
+    if (fichier.partiel) avertissements.push(`${nomAppareil(fichier)} : export partiel (${fichier.scenarios.filter((r) => r.statut !== 'complet').map((r) => `${r.scenario.id} ${r.statut}`).join(', ')})`)
+    for (const resultat of fichier.scenarios) {
+      if (resultat.plafond.applique) avertissements.push(`${nomAppareil(fichier)} : ${resultat.scenario.id} plafonné à ${resultat.plafond.retenus} fils sur ${resultat.plafond.demandes} (mémoire)`)
+    }
+  }
+  const empreintes = new Set(fichiers.map((fichier) => fichier.fichierScenarios.empreinte))
+  if (empreintes.size > 1) avertissements.push(`fichiers de scénarios différents (${[...empreintes].join(', ')}) : colonnes comparables seulement si les scénarios de même id sont identiques`)
   const colonnes: Agregat['colonnes'] = []
   for (const fichier of fichiers) {
     for (const resultat of fichier.scenarios) {
       if (!colonnes.some((colonne) => colonne.id === resultat.scenario.id)) colonnes.push({ id: resultat.scenario.id, libelle: resultat.scenario.libelle ?? resultat.scenario.id, algorithme: resultat.scenario.algorithme })
     }
   }
-  const resultats = (id: string): ResultatScenario[] => fichiers.flatMap((fichier) => fichier.scenarios.filter((resultat) => resultat.scenario.id === id))
+  const resultats = (id: string): ResultatScenario[] => fichiers.flatMap((fichier) => fichier.scenarios.filter((resultat) => resultat.scenario.id === id && resultat.repetitions.length > 0))
+  /** Débit maximal (défis en 100 s), à défaut celui des défis seuls enchaînés. */
+  const debit = (resultat: ResultatScenario): number => resultat.debitMaximal?.parCentSecondes ?? resultat.debit100s.extrapole
   const parColonne = (calcul: (liste: ResultatScenario[]) => string | null): Array<string | null> => colonnes.map((colonne) => {
     const liste = resultats(colonne.id)
     return liste.length ? calcul(liste) : null
@@ -93,31 +125,46 @@ export function agreger(fichiers: ExportBanc[]): Agregat {
     { libelle: 'Taille des preuves (moyenne)', valeurs: parColonne((liste) => taille(mediane(liste.map((r) => r.statistiques.tailleOctets.moyenne)))) },
     { libelle: 'Temps pour vérifier les preuves du défi (médiane)', valeurs: parColonne((liste) => duree(mediane(liste.map((r) => r.statistiques.verificationMs.mediane)))) },
     { libelle: 'Mémoire pour vérifier les preuves du défi', valeurs: parColonne((liste) => memoire(liste, (r) => ({ octets: r.repetitions[0]?.verification.memoireOctets ?? 0, mode: r.repetitions[0]?.verification.memoire ?? 'mesuree' }))) },
-    { libelle: 'Défis résolus en 100 s', valeurs: colonnes.map(() => null) },
+    { libelle: 'Défis résolus en 100 s (débit maximal : défis en parallèle, un fil chacun)', valeurs: colonnes.map(() => null) },
   ]
   for (const fichier of fichiers) {
     lignes.push({
       libelle: `sur ${nomAppareil(fichier)}`,
       valeurs: colonnes.map((colonne) => {
-        const resultat = fichier.scenarios.find((r) => r.scenario.id === colonne.id)
+        const resultat = fichier.scenarios.find((r) => r.scenario.id === colonne.id && r.repetitions.length > 0)
         if (!resultat) return null
-        const { mesure, extrapole } = resultat.debit100s
-        return mesure === null ? `≈ ${nombre(extrapole)}` : `${mesure} (≈ ${nombre(extrapole)})`
+        if (resultat.debitMaximal) return `${nombre(resultat.debitMaximal.parCentSecondes)}${resultat.debitMaximal.dureeMs >= 100_000 ? '' : ' ¹'}`
+        return `≈ ${nombre(resultat.debit100s.extrapole)} (défis seuls)`
       }),
     })
   }
+  for (const materiel of attaques) {
+    lignes.push({ libelle: `avec ${materiel.nom}${materiel.description ? ` {${materiel.description}}` : ''} ¹`, valeurs: colonnes.map((colonne) => (materiel.debits[colonne.id] === undefined ? null : nombre(materiel.debits[colonne.id]!))) })
+  }
+  lignes.push({ libelle: 'Latence d’un défi seul sur tous les cœurs (médiane, pire appareil)', valeurs: parColonne((liste) => duree(Math.max(...liste.map((r) => r.statistiques.dureeMs.mediane)))) })
   lignes.push({
-    libelle: 'Écart en scénario d’usage, du pire au meilleur appareil mesuré',
-    valeurs: parColonne((liste) => (liste.length < 2 ? null : `× ${nombre(Math.max(...liste.map((r) => r.debit100s.extrapole)) / Math.min(...liste.map((r) => r.debit100s.extrapole)))}`)),
+    libelle: 'Écart en scénario d’usage : meilleur appareil ÷ plus faible',
+    valeurs: parColonne((liste) => (liste.length < 2 ? null : `× ${nombre(Math.max(...liste.map(debit)) / Math.min(...liste.map(debit)))}`)),
   })
+  for (const materiel of attaques) {
+    for (const [reference, choisir] of [['pire appareil', (valeurs: number[]) => Math.min(...valeurs)], ['appareil médian', mediane]] as const) {
+      lignes.push({
+        libelle: `Écart en scénario d’attaque (${materiel.nom}) ÷ ${reference}`,
+        valeurs: parColonne((liste) => {
+          const attaque = materiel.debits[liste[0]!.scenario.id]
+          return attaque === undefined ? null : `× ${nombre(attaque / choisir(liste.map(debit)))}`
+        }),
+      })
+    }
+  }
   // Résistance au déni de service : vérifications de parts valides par seconde, sur tous les cœurs.
   for (const fichier of fichiers) {
     lignes.push({
-      libelle: `Vérifications par seconde, tous les cœurs, sur ${nomAppareil(fichier)}`,
+      libelle: `Résistance au DoS : vérifications par seconde, tous les cœurs, sur ${nomAppareil(fichier)}`,
       valeurs: colonnes.map((colonne) => {
-        const scenario = resultats(colonne.id)[0]!.scenario
+        const scenario = fichiers.flatMap((f) => f.scenarios).find((r) => r.scenario.id === colonne.id)!.scenario
         const debits = fichier.verification.filter((d) => d.algorithme === scenario.algorithme && JSON.stringify(d.parametres) === JSON.stringify(scenario.parametres))
-        const tous = debits.sort((a, b) => b.fils - a.fils)[0]
+        const tous = debits.sort((x, y) => y.fils - x.fils)[0]
         return tous ? `${nombre(tous.parSeconde)} (${tous.fils} fils)` : null
       }),
     })
@@ -130,15 +177,19 @@ export function versMarkdown(agregat: Agregat): string {
   const separateur = `|---|${agregat.colonnes.map(() => '---').join('|')}|`
   const corps = agregat.lignes.map((ligne) => `| ${ligne.libelle} | ${ligne.valeurs.map((valeur) => valeur ?? '').join(' | ')} |`)
   const notes = agregat.avertissements.map((avertissement) => `> ⚠ ${avertissement}`)
-  return [...notes, ...(notes.length ? [''] : []), entete, separateur, ...corps, '', '≈ : extrapolé de la durée moyenne ; sans ≈ : mesuré sur 100 s de défis enchaînés.'].join('\n')
+  return [...notes, ...(notes.length ? [''] : []), entete, separateur, ...corps, '', '¹ extrapolé : débit maximal mesuré sur moins de 100 s et ramené à 100 s, ou matériel d’attaque ; ≈ : extrapolé de la durée moyenne des défis seuls.'].join('\n')
 }
 
 if (import.meta.main) {
-  const chemins = process.argv.slice(2).filter((argument) => !argument.startsWith('--'))
+  const arguments_ = process.argv.slice(2)
+  const indexAttaque = arguments_.indexOf('--attaque')
+  const cheminAttaque = indexAttaque >= 0 ? arguments_[indexAttaque + 1] : undefined
+  const chemins = arguments_.filter((argument, index) => !argument.startsWith('--') && index !== indexAttaque + 1)
   if (!chemins.length) {
-    console.error('Usage : bun scripts/agreger-banc.ts fichier.json… [--json]')
+    console.error('Usage : bun scripts/agreger-banc.ts fichier.json… [--attaque materiels.json] [--json]')
     process.exit(1)
   }
-  const agregat = agreger(chemins.map((chemin) => lireExport(readFileSync(chemin, 'utf8'), basename(chemin))))
+  const attaques = cheminAttaque ? lireAttaque(readFileSync(cheminAttaque, 'utf8'), basename(cheminAttaque)) : []
+  const agregat = agreger(chemins.map((chemin) => lireExport(readFileSync(chemin, 'utf8'), basename(chemin))), attaques)
   console.log(process.argv.includes('--json') ? JSON.stringify(agregat, null, 2) : versMarkdown(agregat))
 }

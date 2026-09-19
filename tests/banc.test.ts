@@ -5,12 +5,16 @@
 import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { calibrer, debitVerification, repetition, resumer } from '../demo/banc/executeur.ts'
+import { calibrer, calibrerDifficulte, debitMaximal, debitVerification, repetition, resumer } from '../demo/banc/executeur.ts'
 import { tailleNonces, verifierNonces, zerosEnTete } from '../demo/banc/moteurs.ts'
-import { type Scenario, SCENARIOS_PROVISOIRES, centile, debit100s, estimerScenario, essaisAttendusScenario, statistiques, validerScenarios } from '../demo/banc/scenarios.ts'
+import {
+  BUDGET_MEMOIRE_INCONNU_MIO, type Scenario, SCENARIOS_PROVISOIRES, TENTATIVES_MAX, ajusterDifficulte, centile, debit100s, difficultePourDuree, empreinteFichier,
+  essaisAttendusScenario, estimerScenario, fichierProvisoire, plafondFils, statistiques, validerFichierScenarios, validerScenarios,
+} from '../demo/banc/scenarios.ts'
+import { Stockage, type Support } from '../demo/banc/stockage.ts'
 import { type ExportBanc, FORMAT_BANC, VERSION_BANC } from '../demo/banc/schema.ts'
 import { hacheurHashcash } from '../demo/banc/sha256.ts'
-import { agreger, lireExport, versMarkdown } from '../scripts/agreger-banc.ts'
+import { agreger, lireAttaque, lireExport, versMarkdown } from '../scripts/agreger-banc.ts'
 
 const racine = resolve(import.meta.dir, '..')
 const env = {
@@ -48,6 +52,48 @@ describe('scénarios et statistiques', () => {
   test('les scénarios provisoires sont valides, marqués comme tels, avec au moins 100 répétitions', () => {
     expect(validerScenarios(SCENARIOS_PROVISOIRES)).toEqual({ scenarios: SCENARIOS_PROVISOIRES })
     expect(SCENARIOS_PROVISOIRES.every((scenario) => scenario.libelle?.startsWith('PROVISOIRE') && scenario.repetitions >= 100)).toBe(true)
+    // Argon2id à deux réglages de mémoire, et une ligne sans parallélisation.
+    expect(SCENARIOS_PROVISOIRES.filter((s) => s.algorithme === 'argon2id').map((s) => s.algorithme === 'argon2id' && s.parametres.memoireKio)).toEqual([16_384, 65_536])
+    expect(SCENARIOS_PROVISOIRES.some((s) => s.sansParallelisation)).toBe(true)
+  })
+
+  test('le fichier de scénarios se valide, accepte une simple liste, et son empreinte change avec son contenu', async () => {
+    const fichier = fichierProvisoire()
+    expect(validerFichierScenarios(fichier)).toEqual({ fichier })
+    expect(validerFichierScenarios(SCENARIOS_PROVISOIRES)).toEqual({ fichier })
+    expect(validerFichierScenarios({ ...fichier, dureeCibleMs: 0 })).toMatchObject({ erreur: expect.stringContaining('dureeCibleMs') })
+    expect(validerFichierScenarios({ ...fichier, autre: 1 })).toMatchObject({ erreur: 'champ inconnu « autre »' })
+    const empreinte = await empreinteFichier(fichier)
+    expect(empreinte).toMatch(/^[0-9a-f]{16}$/)
+    expect(await empreinteFichier({ ...fichier, dureeCibleMs: 2000 })).not.toBe(empreinte)
+  })
+
+  test('tous les cœurs par défaut, un fil sans parallélisation, et plafond mémoire signalé', () => {
+    const argon64 = SCENARIOS_PROVISOIRES.find((s) => s.id === 'argon2id-64m-4x1')!
+    const equix = SCENARIOS_PROVISOIRES.find((s) => s.id === 'equix-n60-4x4')!
+    const seul = SCENARIOS_PROVISOIRES.find((s) => s.sansParallelisation)!
+    const sha = SCENARIOS_PROVISOIRES.find((s) => s.algorithme === 'sha256')!
+    expect(plafondFils(sha, 16, null)).toMatchObject({ demandes: 16, retenus: 16, applique: false })
+    expect(plafondFils(seul, 16, 8)).toMatchObject({ demandes: 1, retenus: 1, applique: false })
+    // 4 Go : 1/32 → 128 Mio, soit 1 fil d’Argon2id à 64 Mio (65 Mio avec le reste), 41 d’Equi-X n = 60.
+    expect(plafondFils(argon64, 8, 4)).toMatchObject({ demandes: 8, retenus: 1, applique: true, budgetMio: 128, source: 'deviceMemory' })
+    expect(plafondFils(equix, 8, 4)).toMatchObject({ retenus: 8, applique: false })
+    // Mémoire inconnue : budget prudent.
+    expect(plafondFils(argon64, 8, null)).toMatchObject({ retenus: Math.floor(BUDGET_MEMOIRE_INCONNU_MIO / 65), applique: true, source: 'inconnue' })
+  })
+
+  test('calibrage des difficultés : estimation initiale et ajustement', () => {
+    const sha: Scenario = { id: 's', algorithme: 'sha256', parametres: {}, parts: 4, difficulte: 0, repetitions: 100 }
+    // 1 s sur 8 fils à 1 µs par essai : 8 000 000 essais, 2 000 000 par part → 2^21.
+    expect(difficultePourDuree(sha, 1000, 0.001, 8)).toBe(21)
+    expect(ajusterDifficulte({ ...sha, difficulte: 21 }, 250, 1000)).toBe(23)
+    expect(ajusterDifficulte({ ...sha, difficulte: 21 }, 1400, 1000)).toBe(21)
+    const equix: Scenario = { id: 'e', algorithme: 'equix', parametres: { n: 60, compilation: 'auto' }, parts: 4, difficulte: 1, repetitions: 100 }
+    // 1 s sur 8 fils à 40 ms par essai : 200 essais, 50 par part → effort ≈ 100.
+    const effort = difficultePourDuree(equix, 1000, 40, 8)
+    expect(effort).toBeGreaterThan(90)
+    expect(effort).toBeLessThan(110)
+    expect(ajusterDifficulte({ ...equix, difficulte: 100 }, 500, 1000)).toBe(200)
   })
 
   test('un scénario invalide est refusé avec un message clair', () => {
@@ -80,7 +126,7 @@ describe('scénarios et statistiques', () => {
     expect(debit100s(Array.from({ length: 150 }, () => 1000))).toEqual({ extrapole: 100, mesure: 100 })
     const sha: Scenario = { id: 's', algorithme: 'sha256', parametres: {}, parts: 4, difficulte: 10, fils: 2, repetitions: 100 }
     expect(essaisAttendusScenario(sha)).toBe(4096)
-    expect(estimerScenario(sha, 8, 0.001)).toBeCloseTo(100 * (4096 * 0.001 / 2 + 4 * 0.001))
+    expect(estimerScenario(sha, 2, 0.001)).toBeCloseTo(100 * (4096 * 0.001 / 2 + 4 * 0.001))
   })
 })
 
@@ -93,9 +139,10 @@ describe('exécution sur de vrais Web Workers', () => {
 
   test('chaque algorithme résout, vérifie, se calibre et mesure son débit de vérification', async () => {
     for (const scenario of petits) {
-      const repetitions = [await repetition(scenario, env), await repetition(scenario, env)]
+      const plafond = plafondFils(scenario, env.coeurs, 8)
+      const repetitions = [await repetition(scenario, plafond.retenus, env), await repetition(scenario, plafond.retenus, env)]
       expect(repetitions.every((r) => r.verification.valide && r.essais >= scenario.parts && r.dureeMs > 0)).toBe(true)
-      const resultat = resumer(scenario, repetitions, env.coeurs, null)
+      const resultat = resumer(scenario, repetitions, plafond, null)
       expect(resultat.statistiques.dureeMs.nombre).toBe(2)
       expect(resultat.filsEffectifs).toBe(2)
       expect(await calibrer(scenario, env, 100)).toBeGreaterThan(0)
@@ -115,9 +162,29 @@ describe('exécution sur de vrais Web Workers', () => {
     expect(await verifierNonces('sha256', {}, graine, [nonces[0]! + 1, nonces[1]!, nonces[2]!], 8)).toBe(hacheur.zerosEnTete(nonces[0]! + 1) >= 8)
   })
 
+  test('débit maximal : des défis en parallèle, un fil chacun, comptés dans la fenêtre', async () => {
+    const scenario: Scenario = { id: 'sha', algorithme: 'sha256', parametres: {}, parts: 1, difficulte: 10, repetitions: 1 }
+    const debit = await debitMaximal(scenario, 2, env, 800)
+    expect(debit.concurrence).toBe(2)
+    expect(debit.defis).toBeGreaterThan(2)
+    expect(debit.parCentSecondes).toBeCloseTo(debit.defis * 100_000 / debit.dureeMs)
+    expect(debit.dureeMoyenneDefiMs).toBeGreaterThan(0)
+  }, 30_000)
+
+  test('mode calibrer : la difficulté converge vers la durée cible', async () => {
+    const scenario: Scenario = { id: 'sha', algorithme: 'sha256', parametres: {}, parts: 2, difficulte: 0, repetitions: 1 }
+    const tours: number[] = []
+    const resultat = await calibrerDifficulte(scenario, 2, 60, env, { defis: 7, onTour: (difficulte) => tours.push(difficulte) })
+    expect(tours.length).toBeGreaterThan(0)
+    // Réglage par bits entiers : médiane à un facteur ≈ 2 près de la cible, sur une machine chargée.
+    expect(resultat.medianeMs).toBeGreaterThan(15)
+    expect(resultat.medianeMs).toBeLessThan(240)
+    expect(resultat.difficulte).toBeGreaterThan(8)
+  }, 60_000)
+
   test('une annulation arrête le défi en cours', async () => {
     const annulation = new AbortController()
-    const calcul = repetition({ id: 'long', algorithme: 'sha256', parametres: {}, parts: 1, difficulte: 40, fils: 1, repetitions: 1 }, { ...env, signal: annulation.signal })
+    const calcul = repetition({ id: 'long', algorithme: 'sha256', parametres: {}, parts: 1, difficulte: 40, fils: 1, repetitions: 1 }, 1, { ...env, signal: annulation.signal })
     setTimeout(() => annulation.abort(), 100)
     await expect(calcul).rejects.toMatchObject({ name: 'AbortError' })
   })
@@ -130,29 +197,95 @@ describe('agrégation de plusieurs appareils', () => {
       dureeMs: (500 + rang * 5) * facteur, essais: 5, memoireOctets: 3_000_000, memoire: 'mesuree' as const, tailleOctets: 68,
       verification: { dureeMs: 1, memoireOctets: 1_200_000, memoire: 'mesuree' as const, valide: true },
     }))
+    const plafond = { demandes: 8, retenus: 8, applique: false, budgetMio: 256, source: 'deviceMemory' as const }
     return {
-      format: FORMAT_BANC, version: VERSION_BANC, date: '2026-09-19T00:00:00.000Z', paquet: '0.5.0', rapide: false,
+      format: FORMAT_BANC, version: VERSION_BANC, date: '2026-09-19T00:00:00.000Z', paquet: '0.5.0', rapide: false, partiel: false,
+      fichierScenarios: { ...fichierProvisoire(), empreinte: '0123456789abcdef' },
       appareil: { detecte: { agent: 'Mozilla/5.0 (X11; Linux x86_64) Chrome/140.0', coeurs: 8, memoireAppareilGo: 8, ecran: null, plateforme: 'Linux', webAssembly: true }, saisi: { modele, processeur: '', gpu: '', ram: '', remarques: '' } },
-      scenarios: [resumer(scenario, repetitions, 8, 35)],
+      scenarios: [resumer(scenario, repetitions, plafond, 35, { statut: 'complet', tentatives: 1, erreurs: [], debitMaximal: { concurrence: 8, dureeMs: 30_000, defis: 60 / facteur, parCentSecondes: 200 / facteur, dureeMoyenneDefiMs: 4000 * facteur } })],
       verification: [{ algorithme: 'equix', parametres: { n: 60, compilation: 'auto' }, fils: 8, verifications: 1000, dureeMs: 3000, parSeconde: 30_000 / facteur }],
     }
   }
 
-  test('produit les lignes du tableau, par appareil, et l’écart entre appareils', () => {
-    const agregat = agreger([exportSynthetique('PC 2020', 1), exportSynthetique('Mobile', 4)])
+  test('produit les lignes du tableau, par appareil, et les écarts d’usage et d’attaque', () => {
+    const attaques = lireAttaque(JSON.stringify({ format: 'pow-equix-wasm/banc-attaque', version: 1, materiels: [{ nom: '10 000 €', debits: { eq: 2000 } }, { nom: '1 000 000 €', debits: { eq: 40_000 } }] }), 'attaque.json')
+    const agregat = agreger([exportSynthetique('PC 2020', 1), exportSynthetique('Tablette', 2), exportSynthetique('Mobile', 4)], attaques)
     const ligne = (debut: string): Array<string | null> => agregat.lignes.find((l) => l.libelle.startsWith(debut))!.valeurs
     expect(agregat.colonnes.map((c) => c.id)).toEqual(['eq'])
     expect(ligne('Vérifier une preuve : temps')).toEqual(['250,0 µs'])
     expect(ligne('Combien de parts')).toEqual(['4 parts'])
-    expect(ligne('sur PC 2020')[0]).toContain('≈ 134') // 100 000 / 747,5 ms
+    // Débit maximal (défis en parallèle) par appareil, extrapolé de 30 s ; latence à part.
+    expect(ligne('sur PC 2020')).toEqual(['200 ¹'])
+    expect(ligne('sur Mobile')).toEqual(['50,0 ¹'])
+    expect(ligne('avec 10 000 €')).toEqual(['2\u202f000'])
+    expect(ligne('Latence')[0]).toBe('2,99 s') // médiane 747,5 ms × 4 sur le mobile
     expect(ligne('Écart en scénario d’usage')).toEqual(['× 4,0'])
-    expect(ligne('Vérifications par seconde, tous les cœurs, sur Mobile')).toEqual(['7\u202f500 (8 fils)'])
+    expect(ligne('Écart en scénario d’attaque (10 000 €) ÷ pire appareil')).toEqual(['× 40,0'])
+    expect(ligne('Écart en scénario d’attaque (10 000 €) ÷ appareil médian')).toEqual(['× 20,0'])
+    expect(ligne('Écart en scénario d’attaque (1 000 000 €) ÷ appareil médian')).toEqual(['× 400'])
+    expect(ligne('Résistance au DoS : vérifications par seconde, tous les cœurs, sur Mobile')).toEqual(['7\u202f500 (8 fils)'])
     expect(versMarkdown(agregat)).toContain('| Equi-X essai |')
   })
 
   test('refuse un fichier d’un autre format ou d’une autre version', () => {
     expect(() => lireExport(JSON.stringify({ format: 'autre', version: 1 }), 'a.json')).toThrow('format « autre »')
-    expect(() => lireExport(JSON.stringify({ format: FORMAT_BANC, version: 2 }), 'b.json')).toThrow('version 2')
+    expect(() => lireExport(JSON.stringify({ format: FORMAT_BANC, version: 1 }), 'b.json')).toThrow('version 1')
+    expect(() => lireAttaque(JSON.stringify({ format: 'autre' }), 'c.json')).toThrow('pow-equix-wasm/banc-attaque')
+  })
+})
+
+describe('reprise après un plantage', () => {
+  function memoire(): Support {
+    const donnees = new Map<string, string>()
+    return {
+      getItem: (cle) => donnees.get(cle) ?? null,
+      setItem: (cle, valeur) => void donnees.set(cle, valeur),
+      removeItem: (cle) => void donnees.delete(cle),
+      key: (rang) => [...donnees.keys()][rang] ?? null,
+      get length() { return donnees.size },
+    }
+  }
+  const faite = { dureeMs: 10, essais: 1, memoireOctets: 0, memoire: 'estimee' as const, tailleOctets: 2, verification: { dureeMs: 1, memoireOctets: 0, memoire: 'estimee' as const, valide: true } }
+
+  test('les répétitions stockées survivent au rechargement, par appareil, fichier et mode', () => {
+    const support = memoire()
+    const avant = new Stockage(support, 'appareil', 'empreinte', false)
+    expect(avant.commencerTentative('s')).toBe(true)
+    avant.modifier('s', (e) => { e.repetitions.push(faite, faite) })
+    // « Plantage » : nouvelle instance, mêmes clés.
+    const apres = new Stockage(support, 'appareil', 'empreinte', false)
+    expect(apres.lire('s')).toMatchObject({ statut: 'enCours', tentatives: 1, repetitions: [faite, faite] })
+    expect(new Stockage(support, 'appareil', 'autre-fichier', false).lire('s').repetitions).toEqual([])
+    expect(new Stockage(support, 'appareil', 'empreinte', true).lire('s').repetitions).toEqual([])
+  })
+
+  test('au plus 3 tentatives : un plantage ou une erreur en consomme une, pas une annulation', () => {
+    const magasin = new Stockage(memoire(), 'a', 'e', false)
+    expect(magasin.commencerTentative('s')).toBe(true)
+    magasin.rendreTentative('s') // annulation
+    expect(magasin.lire('s').tentatives).toBe(0)
+    for (let tentative = 1; tentative <= TENTATIVES_MAX; tentative++) {
+      expect(magasin.commencerTentative('s')).toBe(true)
+      magasin.echec('s', `erreur ${tentative}`)
+    }
+    expect(magasin.lire('s')).toMatchObject({ statut: 'incomplet', tentatives: 3, erreurs: ['erreur 1', 'erreur 2', 'erreur 3'] })
+    expect(magasin.commencerTentative('s')).toBe(false)
+    // Un scénario fini ne se relance pas.
+    magasin.commencerTentative('t')
+    magasin.modifier('t', (e) => { e.statut = 'complet' })
+    expect(magasin.commencerTentative('t')).toBe(false)
+  })
+
+  test('le bouton d’effacement retire tous les résultats du banc, et eux seuls', () => {
+    const support = memoire()
+    support.setItem('autre/cle', 'garde')
+    support.setItem('pow-equix-banc/fiche', '{}')
+    const magasin = new Stockage(support, 'a', 'e', false)
+    magasin.commencerTentative('s')
+    magasin.ajouterVerification({ algorithme: 'sha256', parametres: {}, fils: 1, verifications: 1, dureeMs: 1, parSeconde: 1 })
+    expect(Stockage.toutEffacer(support)).toBe(2)
+    expect(support.length).toBe(2)
+    expect(magasin.verifications()).toEqual([])
   })
 })
 
