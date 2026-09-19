@@ -32,6 +32,24 @@
           <input name="nombre" type="number" min="1" max="64" step="1" value="4" required>
           <small>Plusieurs petites preuves rendent l’attente plus régulière.</small>
         </label>
+        <label>Mémoire par fil
+          <select name="n">
+            <option value="60">1,8 Mio — n = 60 (Equi-X)</option>
+            <option value="64">3,8 Mio — n = 64</option>
+            <option value="68">7,6 Mio — n = 68</option>
+            <option value="72">15 Mio — n = 72</option>
+            <option value="76">30 Mio — n = 76</option>
+            <option value="80">63 Mio — n = 80</option>
+          </select>
+          <small>Equihash(n, 3) sur HashX : chaque pas double la mémoire et le temps d’un essai. Le serveur doit vérifier avec le même n.</small>
+        </label>
+        <label>Programmes HashX
+          <select name="compilation">
+            <option value="auto">Compilés en WebAssembly (par défaut)</option>
+            <option value="jamais">Interprétés</option>
+          </select>
+          <small>Compiler chaque programme rend un essai plus de dix fois plus rapide en WebAssembly.</small>
+        </label>
         <label>Web Workers
           <input name="fils" type="number" min="0" max="64" step="1" required>
           <small>Prérempli comme le paquet : autant que de cœurs, sans dépasser les essais attendus. 0 : fil principal.</small>
@@ -79,7 +97,7 @@
       <dl id="synthese" class="grille"></dl>
       <div class="defilement">
         <table>
-          <thead><tr><th scope="col">n°</th><th scope="col">Moteur</th><th scope="col">Durée</th><th scope="col">Essais</th><th scope="col">Essais/s</th><th scope="col">Mémoire</th></tr></thead>
+          <thead><tr><th scope="col">n°</th><th scope="col">Moteur</th><th scope="col">n</th><th scope="col">Durée</th><th scope="col">Essais</th><th scope="col">Essais/s</th><th scope="col">Mémoire</th></tr></thead>
           <tbody id="lignes"></tbody>
         </table>
       </div>

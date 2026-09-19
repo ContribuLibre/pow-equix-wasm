@@ -3,16 +3,23 @@
 // réglages s’affiche d’emblée ; les mesures se complètent à chaque preuve.
 
 import {
-  type CreateurEquixJs, type Moteur, ModuleEquix, REFERENCE_MS_PAR_ESSAI, TAILLE_PART, construireGraine, essaisAttendus, estimerDuree,
-  filsConseilles, moteurRetenu, probabiliteEssai, ralentissement, resoudre, webAssemblyDisponible,
+  type Compilation, type CreateurEquixJs, type Execution, type Moteur, ModuleEquix, construireGraine, essaisAttendus, estimerDuree, executionPrevue,
+  filsConseilles, memoirePourN, msParEssai, probabiliteEssai, ralentissement, resoudre, taillePart, webAssemblyDisponible,
 } from '../src/index.ts'
 
-interface Mesure { moteur: Moteur; duree: number; essais: number; memoire: number }
+interface Mesure { moteur: Moteur; compilation: boolean; n: number; duree: number; essais: number; memoire: number }
 interface Verification { moteur: Moteur; parVerification: number; memoire: number }
-type Reglages = { effort: number; nombre: number; fils: number; moteur: Moteur | 'auto'; repetitions: number; verifications: number }
+type Reglages = { effort: number; nombre: number; n: number; compilation: Compilation; fils: number; moteur: Moteur | 'auto'; repetitions: number; verifications: number }
 
-/** Zone de travail du solveur par fil (≈ 1,8 Mio), plus l’instance du module. */
-const MEMOIRE_PAR_FIL = 2.9 * 1024 * 1024
+/** Mémoire propre à une instance du module (pile, tas, tampon), en plus de la zone de travail du solveur : mesurée ≈ 1,3 Mio. */
+const MEMOIRE_MODULE = 1.3 * 1024 * 1024
+
+const NOMS_EXECUTION: Record<Execution, string> = {
+  wasmCompile: 'WebAssembly, programmes HashX compilés',
+  wasm: 'WebAssembly, programmes HashX interprétés',
+  js: 'JavaScript',
+  jsSansJit: 'JavaScript (probablement sans JIT)',
+}
 
 const element = <T extends HTMLElement>(id: string): T => {
   const trouve = document.getElementById(id)
@@ -53,8 +60,11 @@ function centile(valeurs: number[], rang: number): number {
 
 function reglages(): Reglages {
   const valeur = (nom: string): number => Number((formulaire.elements.namedItem(nom) as HTMLInputElement).value)
-  const moteur = (formulaire.elements.namedItem('moteur') as HTMLSelectElement).value as Reglages['moteur']
-  return { effort: valeur('effort'), nombre: valeur('nombre'), fils: valeur('fils'), moteur, repetitions: valeur('repetitions'), verifications: valeur('verifications') }
+  const choix = (nom: string): string => (formulaire.elements.namedItem(nom) as HTMLSelectElement).value
+  return {
+    effort: valeur('effort'), nombre: valeur('nombre'), n: Number(choix('n')), compilation: choix('compilation') as Compilation, fils: valeur('fils'),
+    moteur: choix('moteur') as Reglages['moteur'], repetitions: valeur('repetitions'), verifications: valeur('verifications'),
+  }
 }
 
 const navigateur = navigator as Navigator & { deviceMemory?: number }
@@ -77,9 +87,9 @@ const champFils = formulaire.elements.namedItem('fils') as HTMLInputElement
 let filsChoisis = false
 champFils.addEventListener('input', () => { filsChoisis = true })
 
-/** Moteur que le calcul emploiera, avec les deux moteurs fournis. */
-function moteurPrevu(choix: Reglages): Moteur | null {
-  return moteurRetenu({ octets: new Uint8Array(1), js: () => { throw new Error('non chargé') }, moteur: choix.moteur })
+/** Exécution que le calcul emploiera, avec les deux moteurs fournis. */
+function executionChoisie(choix: Reglages): Execution | null {
+  return executionPrevue({ octets: new Uint8Array(1), js: () => { throw new Error('non chargé') }, moteur: choix.moteur, compilation: choix.compilation })
 }
 
 let tempsParEssaiMesure: number | undefined
@@ -90,17 +100,20 @@ function prevoir(): void {
   if (!filsChoisis) champFils.value = String(filsConseilles(choix.effort, choix.nombre))
   const fils = Math.max(1, Number(champFils.value))
   const essais = essaisAttendus(choix.effort, choix.nombre)
-  const moteur = moteurPrevu(choix)
-  // Sans WebAssembly, le JIT est en général coupé aussi : c’est l’hypothèse prudente.
-  const execution = moteur === 'wasm' ? 'wasm' : appareil.webAssembly ? 'js' : 'jsSansJit'
+  const prevue = executionChoisie(choix)
+  const execution: Execution = prevue ?? 'jsSansJit'
+  const filsActifs = Math.min(fils, Math.ceil(essais))
+  const parFil = memoirePourN(choix.n) + MEMOIRE_MODULE
   const lignes: Array<[string, string]> = [
-    ['Taille de la preuve', `${choix.nombre * TAILLE_PART} octets (${choix.nombre} × ${TAILLE_PART})`],
+    ['Taille de la preuve', `${choix.nombre * taillePart(choix.n)} octets (${choix.nombre} × ${taillePart(choix.n)})`],
     ['Réussite d’un essai', `${nombres.format(probabiliteEssai(choix.effort) * 100)} %`],
     ['Essais attendus', `${nombres.format(essais)} en moyenne par preuve`],
-    ['Moteur prévu', moteur === null ? 'aucun : WebAssembly indisponible' : moteur === 'wasm' ? 'WebAssembly' : `JavaScript${execution === 'jsSansJit' ? ' (probablement sans JIT)' : ''}, ${nombres.format(ralentissement(execution))} × plus lent`],
-    ['Durée estimée', `${duree(estimerDuree({ effort: choix.effort, nombre: choix.nombre, execution, fils }))} avec ${fils} fil(s)`],
-    ['Mémoire estimée', `≈ ${taille(MEMOIRE_PAR_FIL * Math.min(fils, Math.ceil(essais)))}`],
-    ['Vérification estimée', `≈ ${duree(choix.nombre * 0.25 * ralentissement(execution))} par preuve`],
+    ['Exécution prévue', prevue === null ? 'aucune : WebAssembly indisponible' : `${NOMS_EXECUTION[prevue]}${prevue === 'wasmCompile' ? '' : `, ${nombres.format(ralentissement(prevue, 'wasmCompile'))} × plus lent que compilé`}`],
+    ['Durée d’un essai', `≈ ${duree(msParEssai(execution, choix.n))} sur un cœur`],
+    ['Durée estimée', `${duree(estimerDuree({ effort: choix.effort, nombre: choix.nombre, execution, fils, n: choix.n }))} avec ${fils} fil(s)`],
+    ['Mémoire par fil', `≈ ${taille(parFil)} (${taille(memoirePourN(choix.n))} de travail + module)`],
+    ['Mémoire totale', `≈ ${taille(parFil * filsActifs)} pour ${filsActifs} fil(s) actif(s)`],
+    ['Vérification estimée', `≈ ${duree(choix.nombre * 0.25 * (execution.startsWith('wasm') ? 1 : ralentissement(execution)))} par preuve, quel que soit n`],
   ]
   if (tempsParEssaiMesure) lignes.push(['Durée d’après la dernière mesure', duree(essais * tempsParEssaiMesure / Math.min(fils, essais))])
   remplir(element('previsions'), lignes)
@@ -133,9 +146,9 @@ formulaire.addEventListener('submit', async (evenement) => {
   let verification: Verification | undefined
   afficher(choix, mesures, verification)
   try {
-    const moteur = moteurPrevu(choix)
-    const octets = moteur === 'wasm' || choix.moteur === 'auto' ? await octetsWasm.catch(() => undefined) : undefined
-    const js = moteur === 'js' ? await chargerJs() : undefined
+    const execution = executionChoisie(choix)
+    const octets = execution?.startsWith('wasm') || choix.moteur === 'auto' ? await octetsWasm.catch(() => undefined) : undefined
+    const js = execution === 'js' || execution === 'jsSansJit' ? await chargerJs() : undefined
     for (let repetition = 1; repetition <= choix.repetitions; repetition++) {
       // Une graine différente à chaque répétition : chaque preuve est indépendante.
       const graine = await construireGraine('pow-equix-wasm/demo', `${Date.now()}-${repetition}-${Math.random()}`)
@@ -144,21 +157,22 @@ formulaire.addEventListener('submit', async (evenement) => {
       barre.value = 0
       let memoire = 0
       const resultat = await resoudre({
-        octets, js, moteur: choix.moteur, graine, effort: choix.effort, nombre: choix.nombre, fils: choix.fils, signal: calcul.signal,
+        octets, js, moteur: choix.moteur, compilation: choix.compilation, n: choix.n, graine, effort: choix.effort, nombre: choix.nombre, fils: choix.fils, signal: calcul.signal,
         onProgression: (progression) => {
           memoire = Math.max(memoire, progression.memoireOctets)
           barre.value = progression.parts
           remplir(element('direct'), [
-            ['Moteur', progression.moteur === 'wasm' ? 'WebAssembly' : 'JavaScript'],
+            ['Moteur', progression.moteur === 'wasm' ? `WebAssembly, programmes ${progression.compilation ? 'compilés' : 'interprétés'}` : 'JavaScript'],
+            ['Paramètre', `n = ${progression.n}`],
             ['Parts trouvées', `${progression.parts} / ${choix.nombre}`],
             ['Essais', String(progression.essais)],
             ['Temps écoulé', duree(progression.dureeMs)],
             ['Temps restant estimé', progression.restantEstimeMs === null ? '…' : duree(progression.restantEstimeMs)],
-            ['Mémoire du module', taille(progression.memoireOctets)],
+            ['Mémoire réelle des modules', taille(progression.memoireOctets)],
           ])
         },
       })
-      mesures.push({ moteur: resultat.moteur, duree: resultat.dureeMs, essais: resultat.essais, memoire: Math.max(memoire, resultat.memoireOctets) })
+      mesures.push({ moteur: resultat.moteur, compilation: resultat.compilation, n: resultat.n, duree: resultat.dureeMs, essais: resultat.essais, memoire: Math.max(memoire, resultat.memoireOctets) })
       // Dès la première preuve : pause pour mesurer la vérification, puis la suite.
       if (!verification) {
         etat.textContent = 'Mesure de la vérification…'
@@ -181,10 +195,16 @@ function mesurerVerification(module: ModuleEquix, graine: Uint8Array, parts: Uin
   const debut = performance.now()
   let faites = 0
   while (faites < choix.verifications && (faites < 3 || performance.now() - debut < 1000)) {
-    if (!module.verifier(graine, parts, choix.effort, choix.nombre)) throw new Error('Une preuve calculée n’a pas été vérifiée : module ou chargeur incohérent.')
+    if (!module.verifier(graine, parts, choix.effort, choix.nombre, choix.n)) throw new Error('Une preuve calculée n’a pas été vérifiée : module ou chargeur incohérent.')
     faites++
   }
   return { moteur: module.moteur, parVerification: (performance.now() - debut) / faites, memoire: module.memoireOctets }
+}
+
+/** Exécution effectivement mesurée, pour la comparer à sa référence. */
+function executionMesuree(mesure: Mesure): Execution {
+  if (mesure.moteur === 'wasm') return mesure.compilation ? 'wasmCompile' : 'wasm'
+  return appareil.webAssembly ? 'js' : 'jsSansJit'
 }
 
 function afficher(choix: Reglages, mesures: Mesure[], verification: Verification | undefined): void {
@@ -204,12 +224,12 @@ function afficher(choix: Reglages, mesures: Mesure[], verification: Verification
     ['Moyenne', duree(tempsTotal / mesures.length)],
     ['Min – max', `${duree(Math.min(...durees))} – ${duree(Math.max(...durees))}`],
     ['Essais par preuve', `${nombres.format(essais / mesures.length)} mesurés, ${nombres.format(essaisAttendus(choix.effort, choix.nombre))} attendus`],
-    ['Durée d’un essai (un fil)', `${duree(tempsParEssaiMesure!)} (référence ${mesures[0]!.moteur === 'wasm' ? 'WebAssembly' : 'JavaScript'} : ${duree(REFERENCE_MS_PAR_ESSAI[mesures[0]!.moteur])})`],
+    ['Durée d’un essai (un fil)', `${duree(tempsParEssaiMesure!)} (référence ${NOMS_EXECUTION[executionMesuree(mesures[0]!)]} : ${duree(msParEssai(executionMesuree(mesures[0]!), mesures[0]!.n))})`],
     ['Mémoire du module', `${taille(memoireMax)} au total${choix.fils > 0 ? `, ${taille(memoireMax / Math.min(choix.fils, Math.ceil(essais / mesures.length)))} par fil actif` : ''}`],
   ] : [['Preuves mesurées', `0 sur ${choix.repetitions}`]])
   element('lignes').replaceChildren(...mesures.map((mesure, index) => {
     const ligne = document.createElement('tr')
-    for (const texte of [String(index + 1), mesure.moteur === 'wasm' ? 'WebAssembly' : 'JavaScript', duree(mesure.duree), String(mesure.essais), nombres.format(mesure.essais / (mesure.duree / 1000)), taille(mesure.memoire)]) {
+    for (const texte of [String(index + 1), mesure.moteur === 'wasm' ? (mesure.compilation ? 'WebAssembly compilé' : 'WebAssembly interprété') : 'JavaScript', String(mesure.n), duree(mesure.duree), String(mesure.essais), nombres.format(mesure.essais / (mesure.duree / 1000)), taille(mesure.memoire)]) {
       const cellule = document.createElement('td')
       cellule.textContent = texte
       ligne.append(cellule)
@@ -220,13 +240,13 @@ function afficher(choix: Reglages, mesures: Mesure[], verification: Verification
     ['Moteur', verification.moteur === 'wasm' ? 'WebAssembly' : 'JavaScript'],
     ['Par vérification', duree(verification.parVerification)],
     ['Par part', duree(verification.parVerification / choix.nombre)],
-    ['Taille de la preuve', `${choix.nombre * TAILLE_PART} octets (${choix.nombre} × ${TAILLE_PART})`],
+    ['Taille de la preuve', `${choix.nombre * taillePart(choix.n)} octets (${choix.nombre} × ${taillePart(choix.n)})`],
     ['Mémoire du module', taille(verification.memoire)],
   ] : [['Vérification', 'mesurée dès la fin de la première preuve']])
   element<HTMLTextAreaElement>('export').value = JSON.stringify({
     appareil,
     reglages: choix,
-    preuves: mesures.map((mesure) => ({ moteur: mesure.moteur, dureeMs: Math.round(mesure.duree), essais: mesure.essais, memoireOctets: mesure.memoire })),
+    preuves: mesures.map((mesure) => ({ moteur: mesure.moteur, compilation: mesure.compilation, n: mesure.n, dureeMs: Math.round(mesure.duree), essais: mesure.essais, memoireOctets: mesure.memoire })),
     synthese: mesures.length ? { medianeMs: Math.round(centile(durees, 0.5)), p90Ms: Math.round(centile(durees, 0.9)), tempsParEssaiMs: Number(tempsParEssaiMesure!.toFixed(2)), memoireMaxOctets: memoireMax } : null,
     verification: verification ? { moteur: verification.moteur, parVerificationMs: Number(verification.parVerification.toFixed(4)), memoireOctets: verification.memoire } : null,
     date: new Date().toISOString(),
