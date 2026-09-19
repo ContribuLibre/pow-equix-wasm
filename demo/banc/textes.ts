@@ -47,7 +47,9 @@ export interface TextesBanc {
     plantagesConstates: (liste: string) => string
     limitesLevees: (nombre: number) => string
     palier: (id: string, fils: number) => string
-    calibrageTermine: (cible: string, echecs: string[]) => string
+    calibrageTermine: (cible: string, echecs: string[], controles: string[]) => string
+    controle: (id: string, parts: number, difficulte: number, rapport: string, conforme: boolean) => string
+    theorie: string
     calibrePartiel: (difficulte: number) => string
     nonCalibre: string
   }
@@ -84,7 +86,7 @@ const fr: TextesBanc = {
     remarques: 'Remarques',
     remarquesExemple: 'ex. sur secteur, autres applications fermées',
     scenarios: 'Scénarios',
-    provisoire: 'Scénarios par défaut : défi visé ≈ 1 s (médiane, tous les cœurs, sur le PC de référence), 80 % des défis dans un rapport ≤ 2 (p90/p10 ≤ 2). Difficultés issues d’une simulation : à calibrer sur le PC de référence, puis à importer telles quelles ailleurs. La durée de mesure du débit maximal (dureeDebitMs) reste provisoire.',
+    provisoire: 'Scénarios par défaut : défi visé ≈ 1 s (médiane, tous les cœurs, sur le PC de référence), 80 % des défis dans un rapport ≤ 2 (p90/p10 ≤ 2). Parts fixées par la théorie (p90/p10 ≤ 2 sur 8 fils), difficultés à calibrer sur le PC de référence, puis à importer telles quelles ailleurs. La durée de mesure du débit maximal (dureeDebitMs) reste provisoire.',
     scenariosAide: 'Fichier JSON pow-equix-wasm/banc-scenarios : dureeCibleMs (médiane visée par le calibrage), dureeDebitMs (mesure du débit maximal), calibrage (machine de référence), et scenarios : { id, libelle, algorithme (sha256, argon2id, equix), parametres, parts, difficulte, fils (« coeurs » par défaut), sansParallelisation, repetitions }. Difficulté : bits nuls en tête pour SHA-256 et Argon2id, effort pour Equi-X. La mémoire se règle pour Argon2id { memoireKio, iterations, parallelisme } comme pour Equi-X { n, compilation }. Les fils sont plafonnés par la mémoire de l’appareil (Argon2id, Equi-X).',
     importerScenarios: 'Importer des scénarios…',
     exporterScenarios: 'Télécharger les scénarios',
@@ -95,7 +97,7 @@ const fr: TextesBanc = {
     exporterPartiel: 'Exporter maintenant (même partiel)',
     effacer: 'Effacer les résultats stockés',
     reference: 'Machine de référence',
-    referenceAide: 'Sur le PC de référence seulement, tous les cœurs : ajuste la difficulté de chaque scénario pour que la médiane d’un défi atteigne dureeCibleMs (1 s), sans changer le nombre de parts sauf si p90/p10 dépasse 2 sur 30 défis de contrôle, puis fige le résultat dans le fichier de scénarios, à télécharger et à importer tel quel sur les autres machines.',
+    referenceAide: 'Sur le PC de référence seulement, tous les cœurs : ajuste la difficulté de chaque scénario pour que la médiane d’un défi atteigne dureeCibleMs (1 s), les parts suivant la théorie (plus petit nombre donnant p90/p10 ≤ 2), avec un contrôle informatif sur 100 défis, puis fige le résultat dans le fichier de scénarios, à télécharger et à importer tel quel sur les autres machines.',
     calibrerDifficultes: 'Calibrer les difficultés sur cette machine',
     estimationAide: 'D’après des durées de référence, puis d’après une mesure de vitesse sur cet appareil. Pour chaque scénario : les défis seuls sur tous les cœurs (latence), puis le débit maximal (dureeDebitMs), puis le banc de vérification (3 s par configuration, sur 1 fil puis sur tous les cœurs). Chaque défi terminé est enregistré dans ce navigateur : après un plantage, relancer reprend où le banc s’était arrêté (3 tentatives au plus par scénario).',
     lancer: 'Lancer le banc',
@@ -117,7 +119,7 @@ const fr: TextesBanc = {
     inconnu: 'inconnu',
     scenariosValides: (nombre) => `${nombre} scénario(s) valide(s).`,
     scenariosInvalides: (message) => `Scénarios refusés : ${message}.`,
-    colonnes: ['id', 'Algorithme', 'Paramètres', 'Parts', 'Difficulté', 'Fils', 'Répétitions', 'Essais attendus', 'Durée estimée'],
+    colonnes: ['id', 'Algorithme', 'Paramètres', 'Parts', 'Difficulté', 'Fils', 'Répétitions', 'Essais attendus', 'Durée estimée', 'Contrôle p90/p10 (calibrage)'],
     estimationTotale: (duree, calibre) => `Durée totale estimée : ${duree} (${calibre ? 'après calibrage sur cet appareil' : 'd’après les références, avant calibrage'}).`,
     calibrage: (id) => `Calibrage : ${id}…`,
     calibre: 'Calibrage terminé.',
@@ -150,7 +152,9 @@ const fr: TextesBanc = {
     plantagesConstates: (liste) => `Plantage constaté au dernier chargement : ${liste}. Ces réglages ne dépasseront plus ce nombre de fils sur cet appareil.`,
     limitesLevees: (nombre) => `${nombre} limite(s) de fils levée(s).`,
     palier: (id, fils) => `Palier de mémoire : ${id}, ${fils} fil(s)…`,
-    calibrageTermine: (cible, echecs) => `Calibrage terminé. Médiane visée : ${cible} ; télécharge le fichier de scénarios pour les autres machines.${echecs.length ? ` En échec après 3 tentatives : ${echecs.join(' ; ')}.` : ''}`,
+    calibrageTermine: (cible, echecs, controles) => `Calibrage terminé. Médiane visée : ${cible} ; télécharge le fichier de scénarios pour les autres machines.${controles.length ? ` Contrôle de régularité (100 défis, informatif) : ${controles.join(' ; ')}.` : ''}${echecs.length ? ` En échec après 3 tentatives : ${echecs.join(' ; ')}.` : ''}`,
+    controle: (id, parts, difficulte, rapport, conforme) => `${id} ${parts} parts × ${difficulte} : p90/p10 ${rapport} ${conforme ? '≤ 2 ✓' : '> 2 ⚠'}`,
+    theorie: 'théorie',
     calibrePartiel: (difficulte) => `gardé à la dernière difficulté mesurée, ${difficulte}`,
     nonCalibre: 'non calibré',
   },
@@ -187,7 +191,7 @@ const en: TextesBanc = {
     remarques: 'Notes',
     remarquesExemple: 'e.g. plugged in, other applications closed',
     scenarios: 'Scenarios',
-    provisoire: 'Default scenarios: challenge targeted at ≈ 1 s (median, all cores, on the reference PC), 80 % of challenges within a factor ≤ 2 (p90/p10 ≤ 2). Difficulties come from a simulation: calibrate them on the reference PC, then import them as is elsewhere. The maximum throughput measurement duration (dureeDebitMs) is still provisional.',
+    provisoire: 'Default scenarios: challenge targeted at ≈ 1 s (median, all cores, on the reference PC), 80 % of challenges within a factor ≤ 2 (p90/p10 ≤ 2). Parts set by the theory (p90/p10 ≤ 2 on 8 threads); calibrate the difficulties on the reference PC, then import them as is elsewhere. The maximum throughput measurement duration (dureeDebitMs) is still provisional.',
     scenariosAide: 'JSON file pow-equix-wasm/banc-scenarios: dureeCibleMs (median targeted by calibration), dureeDebitMs (maximum throughput measurement), calibrage (reference machine), and scenarios: { id, libelle, algorithme (sha256, argon2id, equix), parametres, parts, difficulte, fils (“coeurs” by default), sansParallelisation, repetitions }. Difficulty: leading zero bits for SHA-256 and Argon2id, effort for Equi-X. Memory is tunable for Argon2id { memoireKio, iterations, parallelisme } as for Equi-X { n, compilation }. Threads are capped by the device memory (Argon2id, Equi-X).',
     importerScenarios: 'Import scenarios…',
     exporterScenarios: 'Download scenarios',
@@ -198,7 +202,7 @@ const en: TextesBanc = {
     exporterPartiel: 'Export now (even partial)',
     effacer: 'Clear stored results',
     reference: 'Reference machine',
-    referenceAide: 'On the reference PC only, all cores: adjusts the difficulty of each scenario so that the median challenge reaches dureeCibleMs (1 s), without changing the number of parts unless p90/p10 exceeds 2 over 30 control challenges, then freezes the result in the scenario file, to download and import as is on the other machines.',
+    referenceAide: 'On the reference PC only, all cores: adjusts the difficulty of each scenario so that the median challenge reaches dureeCibleMs (1 s), parts following the theory (smallest number giving p90/p10 ≤ 2), with an informative check over 100 challenges, then freezes the result in the scenario file, to download and import as is on the other machines.',
     calibrerDifficultes: 'Calibrate difficulties on this machine',
     estimationAide: 'From reference durations, then from a speed measurement on this device. For each scenario: single challenges on all cores (latency), then maximum throughput (dureeDebitMs), then the verification bench (3 s per configuration, on 1 thread then on all cores). Each finished challenge is stored in this browser: after a crash, starting again resumes where the bench stopped (at most 3 attempts per scenario).',
     lancer: 'Start the bench',
@@ -220,7 +224,7 @@ const en: TextesBanc = {
     inconnu: 'unknown',
     scenariosValides: (nombre) => `${nombre} valid scenario(s).`,
     scenariosInvalides: (message) => `Scenarios rejected: ${message}.`,
-    colonnes: ['id', 'Algorithm', 'Parameters', 'Parts', 'Difficulty', 'Threads', 'Repetitions', 'Expected attempts', 'Estimated duration'],
+    colonnes: ['id', 'Algorithm', 'Parameters', 'Parts', 'Difficulty', 'Threads', 'Repetitions', 'Expected attempts', 'Estimated duration', 'p90/p10 check (calibration)'],
     estimationTotale: (duree, calibre) => `Estimated total duration: ${duree} (${calibre ? 'after calibration on this device' : 'from references, before calibration'}).`,
     calibrage: (id) => `Calibrating: ${id}…`,
     calibre: 'Calibration done.',
@@ -254,7 +258,9 @@ const en: TextesBanc = {
     limitesLevees: (nombre) => `${nombre} thread limit(s) lifted.`,
     palier: (id, fils) => `Memory step: ${id}, ${fils} thread(s)…`,
     // « Calibrage terminé. » reste en français en tête, pour un pilotage automatique commun aux deux langues.
-    calibrageTermine: (cible, echecs) => `Calibrage terminé. Calibration done. Target median: ${cible}; download the scenario file for the other machines.${echecs.length ? ` Failed after 3 attempts: ${echecs.join('; ')}.` : ''}`,
+    calibrageTermine: (cible, echecs, controles) => `Calibrage terminé. Calibration done. Target median: ${cible}; download the scenario file for the other machines.${controles.length ? ` Regularity check (100 challenges, informative): ${controles.join('; ')}.` : ''}${echecs.length ? ` Failed after 3 attempts: ${echecs.join('; ')}.` : ''}`,
+    controle: (id, parts, difficulte, rapport, conforme) => `${id} ${parts} parts × ${difficulte}: p90/p10 ${rapport} ${conforme ? '≤ 2 ✓' : '> 2 ⚠'}`,
+    theorie: 'theory',
     calibrePartiel: (difficulte) => `kept at the last measured difficulty, ${difficulte}`,
     nonCalibre: 'not calibrated',
   },

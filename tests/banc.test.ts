@@ -11,7 +11,7 @@ import { resumeMachine, validerConfigMachine } from '../demo/banc/machine.ts'
 import { tailleNonces, verifierNonces, zerosEnTete } from '../demo/banc/moteurs.ts'
 import {
   type Scenario, SCENARIOS_PROVISOIRES, TENTATIVES_MAX, ajusterDifficulte, centile, debit100s, difficultePourDuree, empreinteFichier,
-  auDessusDeLaCible, essaisAttendusScenario, estimerScenario, fichierProvisoire, plafondFils, statistiques, validerFichierScenarios, validerScenarios,
+  FILS_REFERENCE, auDessusDeLaCible, choisirDifficulte, essaisAttendusScenario, medianeToursTheorique, partsTheoriques, rapportP90P10Theorique, estimerScenario, fichierProvisoire, plafondFils, statistiques, validerFichierScenarios, validerScenarios,
 } from '../demo/banc/scenarios.ts'
 import { Stockage, type Support } from '../demo/banc/stockage.ts'
 import { type ExportBanc, FORMAT_BANC, VERSION_BANC } from '../demo/banc/schema.ts'
@@ -57,11 +57,13 @@ describe('scénarios et statistiques', () => {
   test('les scénarios par défaut sont ceux arbitrés, valides, avec au moins 100 répétitions sur tous les cœurs', () => {
     expect(validerScenarios(SCENARIOS_PROVISOIRES)).toEqual({ scenarios: SCENARIOS_PROVISOIRES })
     const resume = SCENARIOS_PROVISOIRES.map((s) => `${s.algorithme}${s.algorithme === 'argon2id' ? `-${s.parametres.memoireKio / 1024}m` : s.algorithme === 'equix' ? `-n${s.parametres.n}` : ''} ${s.parts}×${s.difficulte}`)
-    expect(resume).toEqual(['sha256 13×19', 'argon2id-16m 12×2', 'argon2id-64m 5×1', 'equix-n60 13×33', 'equix-n72 7×7', 'equix-n80 3×2'])
+    expect(resume).toEqual(['sha256 15×19', 'argon2id-16m 14×5', 'argon2id-64m 10×3', 'equix-n60 13×30', 'equix-n72 10×14', 'equix-n80 1×2'])
+    // Les parts sont celles de la théorie pour ces difficultés, sur les 8 fils de la machine de référence.
+    for (const scenario of SCENARIOS_PROVISOIRES) expect([scenario.id, scenario.parts]).toEqual([scenario.id, partsTheoriques(scenario, FILS_REFERENCE)])
     expect(SCENARIOS_PROVISOIRES.every((s) => s.repetitions >= 100 && s.fils === 'coeurs')).toBe(true)
     expect(fichierProvisoire().dureeCibleMs).toBe(1000)
     // n = 80 reste au-dessus de la cible : plancher d’effort 2, signalé dans le libellé.
-    const n80 = SCENARIOS_PROVISOIRES.find((s) => s.id === 'equix-n80-3x2')!
+    const n80 = SCENARIOS_PROVISOIRES.find((s) => s.id === 'equix-n80')!
     expect(n80.difficulteMin).toBe(2)
     expect(n80.libelle).toContain('au-dessus de la cible')
     expect(ajusterDifficulte(n80, 1300, 1000)).toBe(2)
@@ -81,8 +83,8 @@ describe('scénarios et statistiques', () => {
   })
 
   test('tous les cœurs par défaut, un fil sans parallélisation, plafond de la mémoire annoncée et limite du garde-fou', () => {
-    const argon64 = SCENARIOS_PROVISOIRES.find((s) => s.id === 'argon2id-64m-5x1')!
-    const equix = SCENARIOS_PROVISOIRES.find((s) => s.id === 'equix-n60-13x33')!
+    const argon64 = SCENARIOS_PROVISOIRES.find((s) => s.id === 'argon2id-64m')!
+    const equix = SCENARIOS_PROVISOIRES.find((s) => s.id === 'equix-n60')!
     const seul: Scenario = { ...equix, id: 'seul', sansParallelisation: true }
     const sha = SCENARIOS_PROVISOIRES.find((s) => s.algorithme === 'sha256')!
     expect(plafondFils(sha, 16, null)).toMatchObject({ demandes: 16, retenus: 16, applique: false })
@@ -96,6 +98,30 @@ describe('scénarios et statistiques', () => {
     // Les deux à la fois : le plus strict l’emporte ; SHA-256 n’a pas de garde-fou.
     expect(plafondFils(argon64, 32, 4, { limite: 4, raison: '' })).toMatchObject({ retenus: 1, source: 'deviceMemory' })
     expect(plafondFils(sha, 32, null, { limite: 2, raison: '' })).toMatchObject({ retenus: 32, applique: false, limiteGarde: null })
+  })
+
+  test('parts théoriques : plus petit nombre donnant p90/p10 ≤ 2', () => {
+    // Loi Gamma(k) pour p petit : 13 parts donnent 2,057, 14 parts 2,002 (juste au-dessus), 15 parts 1,954.
+    expect(rapportP90P10Theorique(13, 2 ** -19)).toBeCloseTo(2.0566, 3)
+    expect(rapportP90P10Theorique(14, 2 ** -19)).toBeCloseTo(2.0020, 3)
+    expect(rapportP90P10Theorique(15, 2 ** -19)).toBeCloseTo(1.954, 3)
+    expect(partsTheoriques({ algorithme: 'sha256', difficulte: 19 })).toBe(15)
+    expect(partsTheoriques({ algorithme: 'sha256', difficulte: 19 }, 8)).toBe(15)
+    // p grand : la granularité des fils compte. Argon2id à 1 bit sur 8 fils : un seul tour suffit presque toujours.
+    expect(partsTheoriques({ algorithme: 'argon2id', difficulte: 1 }, 8)).toBe(1)
+    expect(partsTheoriques({ algorithme: 'argon2id', difficulte: 1 }, 1)).toBe(7)
+    // La loi exacte rejoint la loi Gamma quand p diminue.
+    expect(rapportP90P10Theorique(15, 0.011, 1)).toBeCloseTo(rapportP90P10Theorique(15, 0.001), 1)
+    expect(medianeToursTheorique(1, 0.5, 8)).toBe(1)
+  })
+
+  test('choix de la difficulté par le modèle, les parts suivant la théorie', () => {
+    const equix = SCENARIOS_PROVISOIRES.find((s) => s.id === 'equix-n60')!
+    // 40 ms par tour de 8 essais : effort 30 et 13 parts pour ≈ 1 s.
+    expect(choisirDifficulte(equix, 8, 1000, 40)).toMatchObject({ difficulte: 30, parts: 13 })
+    const n80 = SCENARIOS_PROVISOIRES.find((s) => s.id === 'equix-n80')!
+    // Plancher d’effort respecté, même si la cible est inatteignable.
+    expect(choisirDifficulte(n80, 8, 1000, 1300).difficulte).toBeGreaterThanOrEqual(2)
   })
 
   test('calibrage des difficultés : estimation initiale et ajustement', () => {
@@ -199,19 +225,19 @@ describe('exécution sur de vrais Web Workers', () => {
     expect(debit.parCentSecondes).toBeGreaterThan(0)
   }, 30_000)
 
-  test('mode calibrer : la difficulté converge vers la durée cible, et les parts augmentent si p90/p10 dépasse 2', async () => {
+  test('mode calibrer : ne règle que la difficulté ; parts de la théorie, contrôle informatif', async () => {
     const scenario: Scenario = { id: 'sha', algorithme: 'sha256', parametres: {}, parts: 2, difficulte: 0, repetitions: 1 }
-    const tours: number[] = []
-    const resultat = await calibrerDifficulte(scenario, 2, 60, env, { defis: 7, defisControle: 20, onTour: (difficulte) => tours.push(difficulte) })
-    // 2 parts : p90/p10 dépasse souvent 2 ; alors le calibrage ajoute des parts.
-    expect(resultat.parts).toBeGreaterThanOrEqual(2)
-    if (resultat.parts > 2) expect(tours.length).toBeGreaterThan(2)
-    expect(resultat.rapportP90P10).toBeGreaterThan(1)
-    expect(tours.length).toBeGreaterThan(0)
-    // Réglage par bits entiers : médiane à un facteur ≈ 2 près de la cible, sur une machine chargée.
+    const tours: Array<[number, number]> = []
+    const resultat = await calibrerDifficulte(scenario, 2, 60, env, { defis: 7, defisControle: 20, onTour: (difficulte, _mediane, parts) => tours.push([difficulte, parts]) })
+    // Les parts suivent toujours la théorie pour la difficulté essayée (15 pour SHA-256), jamais le contrôle.
+    expect(tours.every(([difficulte, parts]) => parts === partsTheoriques({ algorithme: 'sha256', difficulte }, 2))).toBe(true)
+    expect(resultat.parts).toBe(partsTheoriques({ algorithme: 'sha256', difficulte: resultat.difficulte }, 2))
+    expect(resultat.conforme).toBe(resultat.rapportP90P10 <= 2)
+    expect(resultat.rapportP90P10Theorique).toBeLessThanOrEqual(2)
+    expect(resultat.defis).toBe(20)
+    // Médiane approchée par bits entiers, sur une machine chargée.
     expect(resultat.medianeMs).toBeGreaterThan(15)
     expect(resultat.medianeMs).toBeLessThan(240)
-    expect(resultat.difficulte).toBeGreaterThan(8)
   }, 60_000)
 
   test('une annulation arrête le défi en cours', async () => {

@@ -6,7 +6,8 @@ import { ModuleEquix, resoudre } from '../../src/index.ts'
 import { type Garde, cleMemoire, paliers } from './garde.ts'
 import { tailleNonces, verifierNonces } from './moteurs.ts'
 import {
-  type ParametresArgon2id, type Plafond, REGULARITE_MAX, type Scenario, ajusterDifficulte, centile, cleConfiguration, debit100s, difficultePourDuree, statistiques,
+  type ParametresArgon2id, type Plafond, REGULARITE_MAX, type Scenario, centile, choisirDifficulte, cleConfiguration, debit100s, medianeToursTheorique, probabiliteSucces,
+  rapportP90P10Theorique, statistiques,
 } from './scenarios.ts'
 import type { DebitMaximal, DebitVerification, Repetition, ResultatScenario, StatutScenario } from './schema.ts'
 
@@ -220,48 +221,48 @@ export async function debitMaximal(scenario: Scenario, concurrence: number, env:
 }
 
 /**
- * Mode « calibrer » (sur le PC de référence, tous les cœurs) : part de la
- * difficulté du scénario (issue de la simulation) — ou d’une estimation
- * d’après la vitesse si elle vaut 0 —, l’ajuste sur des défis réels jusqu’à ce
- * que la médiane approche la cible, sans descendre sous `difficulteMin`. Puis
- * contrôle la régularité sur `defisControle` défis : si p90/p10 dépasse 2, le
- * nombre de parts augmente (×1,3) à durée égale, et l’on recommence (3 fois au
- * plus). SHA-256 et Argon2id ne se règlent que par bits entiers : la médiane
- * reste à un facteur √2 près de la cible.
+ * Mode « calibrer » (sur le PC de référence, tous les cœurs) : ne règle que
+ * la difficulté (ou l’effort) ; les parts sont chaque fois celles de la
+ * théorie (`partsTheoriques`, p90/p10 ≤ 2 sur `fils` fils). La difficulté est
+ * choisie par le modèle (`choisirDifficulte`) d’après la durée d’un tour
+ * d’essais, mesurée d’abord sur un fil, puis corrigée par la médiane de
+ * `defis` défis réels, jusqu’à ce que le choix ne change plus. Enfin, un
+ * contrôle de régularité sur `defisControle` défis, **informatif** : il ne
+ * change rien, son p90/p10 et sa conformité à ≤ 2 sont renvoyés.
  */
 export async function calibrerDifficulte(
   scenario: Scenario, fils: number, cibleMs: number, env: Environnement,
   options: { defis?: number; defisControle?: number; tours?: number; onTour?: (difficulte: number, medianeMs: number, parts: number) => void } = {},
-): Promise<{ difficulte: number; parts: number; medianeMs: number; rapportP90P10: number; defis: number }> {
+): Promise<{ difficulte: number; parts: number; medianeMs: number; rapportP90P10: number; rapportP90P10Theorique: number; conforme: boolean; defis: number }> {
   const defis = options.defis ?? 15
-  const defisControle = options.defisControle ?? 30
-  let courant: Scenario = scenario.difficulte > 0 ? scenario : { ...scenario, difficulte: difficultePourDuree(scenario, cibleMs, await calibrer(scenario, env, 1000), fils) } as Scenario
-  const serie = async (nombre: number): Promise<number[]> => {
+  const defisControle = options.defisControle ?? 100
+  let msParTour = await calibrer(scenario, env, 1000)
+  let choix = choisirDifficulte(scenario, fils, cibleMs, msParTour)
+  const serie = async (courant: Scenario, nombre: number): Promise<number[]> => {
     const durees: number[] = []
     for (let rang = 0; rang < nombre; rang++) durees.push((await repetition(courant, fils, env)).dureeMs)
     return durees.sort((a, b) => a - b)
   }
-  let mediane = Number.NaN
-  let rapport = Number.NaN
-  for (let augmentation = 0; augmentation <= 3; augmentation++) {
-    for (let tour = 0; tour < (options.tours ?? 4); tour++) {
-      mediane = centile(await serie(defis), 0.5)
-      options.onTour?.(courant.difficulte, mediane, courant.parts)
-      const suivante = ajusterDifficulte(courant, mediane, cibleMs)
-      const assezProche = courant.algorithme === 'equix' ? Math.abs(Math.log(mediane / cibleMs)) < Math.log(1.15) : Math.abs(Math.log2(mediane / cibleMs)) < 0.5
-      if (assezProche || suivante === courant.difficulte) break
-      courant = { ...courant, difficulte: suivante } as Scenario
-    }
-    const controle = await serie(defisControle)
-    mediane = centile(controle, 0.5)
-    rapport = centile(controle, 0.9) / centile(controle, 0.1)
-    options.onTour?.(courant.difficulte, mediane, courant.parts)
-    if (rapport <= REGULARITE_MAX || augmentation === 3) break
-    // Plus de parts, chacune plus facile : même durée attendue, dispersion moindre.
-    const parts = Math.min(64, Math.ceil(courant.parts * 1.3))
-    courant = { ...courant, parts, difficulte: ajusterDifficulte(courant, mediane * parts / courant.parts, cibleMs) } as Scenario
+  const avec = (difficulte: number, parts: number): Scenario => ({ ...scenario, difficulte, parts }) as Scenario
+  for (let tour = 0; tour < (options.tours ?? 4); tour++) {
+    const courant = avec(choix.difficulte, choix.parts)
+    const mediane = centile(await serie(courant, defis), 0.5)
+    options.onTour?.(choix.difficulte, mediane, choix.parts)
+    // Durée réelle d’un tour d’essais sur ces fils (création des Web Workers et concurrence comprises).
+    msParTour = mediane / medianeToursTheorique(choix.parts, probabiliteSucces(courant), fils)
+    const suivant = choisirDifficulte(scenario, fils, cibleMs, msParTour)
+    if (suivant.difficulte === choix.difficulte) break
+    choix = suivant
   }
-  return { difficulte: courant.difficulte, parts: courant.parts, medianeMs: mediane, rapportP90P10: rapport, defis: defisControle }
+  const retenu = avec(choix.difficulte, choix.parts)
+  const controle = await serie(retenu, defisControle)
+  const mediane = centile(controle, 0.5)
+  options.onTour?.(choix.difficulte, mediane, choix.parts)
+  const rapport = centile(controle, 0.9) / centile(controle, 0.1)
+  return {
+    difficulte: choix.difficulte, parts: choix.parts, medianeMs: mediane, rapportP90P10: rapport,
+    rapportP90P10Theorique: rapportP90P10Theorique(choix.parts, probabiliteSucces(retenu), fils), conforme: rapport <= REGULARITE_MAX, defis: defisControle,
+  }
 }
 
 /** Configuration d’un Web Worker pour un scénario (calibrage, vérification). */

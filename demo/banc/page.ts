@@ -218,6 +218,7 @@ function afficherScenarios(): void {
     return [
       scenario.id, scenario.algorithme, JSON.stringify(scenario.parametres), String(scenario.parts), String(scenario.difficulte),
       p.applique ? t.plafond(p.retenus, p.demandes, p.source) : String(p.retenus), String(repetitionsEffectives(scenario)), nombres.format(essaisAttendusScenario(scenario)), duree(estimation(scenario)),
+      scenario.calibrage?.rapportP90P10 === undefined ? '—' : `${nombres.format(scenario.calibrage.rapportP90P10)} ${scenario.calibrage.conforme ? '✓' : '⚠'}${scenario.calibrage.rapportP90P10Theorique === undefined ? '' : ` (${t.theorie} ${nombres.format(scenario.calibrage.rapportP90P10Theorique)})`}`,
     ]
   }))
   const total = scenarios.reduce((somme, scenario) => somme + estimation(scenario), 0) + dureeVerification()
@@ -332,6 +333,7 @@ element('calibrer-difficultes').addEventListener('click', () => executer(async (
   const cible = source.dureeCibleMs
   const calibres: Scenario[] = []
   const echecs: string[] = []
+  const controles: string[] = []
   for (const scenario of source.scenarios) {
     let dernier: { difficulte: number; mediane: number; parts: number } | null = null
     let calibre: Scenario | null = null
@@ -349,8 +351,13 @@ element('calibrer-difficultes').addEventListener('click', () => executer(async (
         })
         calibre = {
           ...scenario, difficulte: resultat.difficulte, parts: resultat.parts,
-          calibrage: { medianeMs: Math.round(resultat.medianeMs), repetitions: resultat.defis, rapportP90P10: Number(resultat.rapportP90P10.toFixed(3)), ...(resultat.parts !== scenario.parts ? { partsInitiales: scenario.parts } : {}), ...(erreurs.length ? { tentatives: tentative, erreurs } : {}) },
+          calibrage: {
+            medianeMs: Math.round(resultat.medianeMs), repetitions: resultat.defis, rapportP90P10: Number(resultat.rapportP90P10.toFixed(3)), conforme: resultat.conforme,
+            rapportP90P10Theorique: Number(resultat.rapportP90P10Theorique.toFixed(3)), fils: Math.min(fils, plafond(scenario).retenus),
+            ...(resultat.parts !== scenario.parts ? { partsInitiales: scenario.parts } : {}), ...(erreurs.length ? { tentatives: tentative, erreurs } : {}),
+          },
         } as Scenario
+        controles.push(t.controle(scenario.id, resultat.parts, resultat.difficulte, nombres.format(resultat.rapportP90P10), resultat.conforme))
       } catch (erreur) {
         if (annulation?.signal.aborted) throw erreur
         erreurs.push(erreur instanceof Error ? erreur.message : String(erreur))
@@ -369,7 +376,7 @@ element('calibrer-difficultes').addEventListener('click', () => executer(async (
   const saisie = saisi()
   ecrireFichier({ ...source, scenarios: calibres, calibrage: { date: new Date().toISOString(), appareil: [saisie.modele, saisie.processeur].filter(Boolean).join(', ') || descriptionAppareil(detecte.agent), agent: detecte.agent } })
   await lireScenarios()
-  etat.textContent = t.calibrageTermine(duree(cible), echecs)
+  etat.textContent = t.calibrageTermine(duree(cible), echecs, controles)
 }))
 
 /** Résultats de chaque scénario d’après le stockage : complets, partiels ou non commencés. */

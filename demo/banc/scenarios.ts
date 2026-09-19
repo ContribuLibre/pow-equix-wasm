@@ -54,6 +54,12 @@ export type Scenario = {
     repetitions?: number
     rapportP90P10?: number
     partsInitiales?: number
+    /** Contrôle de régularité, informatif : p90/p10 mesuré sur `repetitions` défis, conforme ou non à ≤ 2. */
+    conforme?: boolean
+    /** p90/p10 prévu par la théorie pour ces parts, cette difficulté et ces fils. */
+    rapportP90P10Theorique?: number
+    /** Fils de la machine de référence, qui entrent dans le calcul des parts. */
+    fils?: number
     /** Tentatives et erreurs, quand il en a fallu plus d’une. */
     tentatives?: number
     erreurs?: string[]
@@ -72,24 +78,34 @@ export const REPETITIONS_RAPIDE = 10
 
 /**
  * Scénarios par défaut, arbitrés : défi visé ≈ 1 s (médiane, tous les cœurs,
- * sur le PC de référence) et 80 % des défis dans un rapport ≤ 2 (p90/p10 ≤ 2).
- * Parts et difficultés issues d’une simulation sur 8 cœurs avec distribution
- * des compteurs à la demande ; le mode « calibrer » ajuste la difficulté sur le
- * PC de référence, sans changer le nombre de parts sauf si p90/p10 dépasse 2.
+ * sur le PC de référence) ; les parts sont fixées par la théorie
+ * (`partsTheoriques`, p90/p10 ≤ 2 sur 8 fils) pour chaque difficulté, et les
+ * difficultés choisies pour une médiane prévue ≈ 1 s d’après des durées
+ * d’essai approchées. Le mode « calibrer » ne règle que la difficulté (les
+ * parts suivent la théorie) ; son contrôle de régularité est informatif.
  * Argon2id a deux réglages de mémoire, comme deux colonnes : sa mémoire se
  * règle, comme celle d’Equi-X (n).
  */
 export const SCENARIOS_PAR_DEFAUT: Scenario[] = [
-  { id: 'sha256-13x19', libelle: 'SHA-256, 13 parts', algorithme: 'sha256', parametres: {}, parts: 13, difficulte: 19, fils: 'coeurs', repetitions: REPETITIONS_MIN },
-  { id: 'argon2id-16m-12x2', libelle: 'Argon2id (mémoire réglable) : 16 Mio, t = 1, p = 1, 12 parts', algorithme: 'argon2id', parametres: { memoireKio: 16_384, iterations: 1, parallelisme: 1 }, parts: 12, difficulte: 2, fils: 'coeurs', repetitions: REPETITIONS_MIN },
-  { id: 'argon2id-64m-5x1', libelle: 'Argon2id (mémoire réglable) : 64 Mio, t = 1, p = 1, 5 parts', algorithme: 'argon2id', parametres: { memoireKio: 65_536, iterations: 1, parallelisme: 1 }, parts: 5, difficulte: 1, fils: 'coeurs', repetitions: REPETITIONS_MIN },
-  { id: 'equix-n60-13x33', libelle: 'Equi-X (mémoire réglable) : n = 60, 1,8 Mio, 13 parts', algorithme: 'equix', parametres: { n: 60, compilation: 'auto' }, parts: 13, difficulte: 33, fils: 'coeurs', repetitions: REPETITIONS_MIN },
-  { id: 'equix-n72-7x7', libelle: 'Equi-X (mémoire réglable) : n = 72, 15 Mio, 7 parts', algorithme: 'equix', parametres: { n: 72, compilation: 'auto' }, parts: 7, difficulte: 7, fils: 'coeurs', repetitions: REPETITIONS_MIN },
+  { id: 'sha256', libelle: 'SHA-256', algorithme: 'sha256', parametres: {}, parts: 15, difficulte: 19, fils: 'coeurs', repetitions: REPETITIONS_MIN },
+  { id: 'argon2id-16m', libelle: 'Argon2id (mémoire réglable) : 16 Mio, t = 1, p = 1', algorithme: 'argon2id', parametres: { memoireKio: 16_384, iterations: 1, parallelisme: 1 }, parts: 14, difficulte: 5, fils: 'coeurs', repetitions: REPETITIONS_MIN },
+  { id: 'argon2id-64m', libelle: 'Argon2id (mémoire réglable) : 64 Mio, t = 1, p = 1', algorithme: 'argon2id', parametres: { memoireKio: 65_536, iterations: 1, parallelisme: 1 }, parts: 10, difficulte: 3, fils: 'coeurs', repetitions: REPETITIONS_MIN },
+  { id: 'equix-n60', libelle: 'Equi-X (mémoire réglable) : n = 60, 1,8 Mio', algorithme: 'equix', parametres: { n: 60, compilation: 'auto' }, parts: 13, difficulte: 30, fils: 'coeurs', repetitions: REPETITIONS_MIN },
   {
-    id: 'equix-n80-3x2', libelle: 'Equi-X (mémoire réglable) : n = 80, 63 Mio, 3 parts (au-dessus de la cible : ≈ 1,3 s simulé)',
-    algorithme: 'equix', parametres: { n: 80, compilation: 'auto' }, parts: 3, difficulte: 2, difficulteMin: 2, fils: 'coeurs', repetitions: REPETITIONS_MIN,
+    id: 'equix-n72', libelle: 'Equi-X (mémoire réglable) : n = 72, 15 Mio (au-dessus de la cible : sur 8 fils, ≈ 0,3–0,6 s ou ≈ 2,9 s, rien entre les deux avec p90/p10 ≤ 2)',
+    algorithme: 'equix', parametres: { n: 72, compilation: 'auto' }, parts: 10, difficulte: 14, fils: 'coeurs', repetitions: REPETITIONS_MIN,
+  },
+  {
+    id: 'equix-n80', libelle: 'Equi-X (mémoire réglable) : n = 80, 63 Mio (au-dessus de la cible : un essai dure déjà ≈ 1,3 s)',
+    algorithme: 'equix', parametres: { n: 80, compilation: 'auto' }, parts: 1, difficulte: 2, difficulteMin: 2, fils: 'coeurs', repetitions: REPETITIONS_MIN,
   },
 ]
+
+/**
+ * Fils de la machine de référence pour lesquels les parts par défaut sont
+ * calculées (`partsTheoriques`) ; le calibrage les recalcule avec les siens.
+ */
+export const FILS_REFERENCE = 8
 
 /** Ancien nom, gardé pour les imports existants. */
 export const SCENARIOS_PROVISOIRES = SCENARIOS_PAR_DEFAUT
@@ -281,6 +297,102 @@ export function ajusterDifficulte(scenario: Scenario, medianeMs: number, cibleMs
 /** La médiane mesurée est-elle au-dessus de la cible (au-delà de la précision du réglage) ? */
 export function auDessusDeLaCible(scenario: Scenario, medianeMs: number, cibleMs: number): boolean {
   return medianeMs > cibleMs * (scenario.algorithme === 'equix' ? 1.15 : Math.SQRT2)
+}
+
+/**
+ * Nombre de parts fixé par la théorie. Un défi de k parts demande T essais,
+ * T suivant une loi binomiale négative (k succès de probabilité p par essai) ;
+ * sur f fils, sa durée vaut à peu près ⌈T / f⌉ tours d’essais. Pour p petit,
+ * c’est une loi Gamma(k), dont le rapport p90/p10 ne dépend que de k. La règle
+ * retenue : le plus petit k tel que p90/p10 ≤ 2 (80 % des défis du simple au
+ * double au plus). SHA-256 (p ≈ 2⁻¹⁹) : 14 parts.
+ */
+export function rapportP90P10Theorique(k: number, p: number, fils = 1): number {
+  if (p < 0.01) return quantileGamma(k, 0.9) / quantileGamma(k, 0.1)
+  // Loi exacte en tours de f essais : P(tours ≤ r) = P(au moins k succès en r·f essais).
+  const quantileTours = (q: number): number => {
+    let r = Math.max(1, Math.floor(k / p / fils / 4))
+    while (r > 1 && probabiliteAuMoins(k, r * fils, p) >= q) r = Math.max(1, Math.floor(r / 2))
+    while (probabiliteAuMoins(k, r * fils, p) < q) r++
+    return r
+  }
+  return quantileTours(0.9) / quantileTours(0.1)
+}
+
+/** P(au moins k succès en n essais de probabilité p), par la somme des k premiers termes binomiaux. */
+function probabiliteAuMoins(k: number, n: number, p: number): number {
+  if (n < k) return 0
+  let terme = Math.exp(n * Math.log1p(-p)) // P(0 succès)
+  let somme = terme
+  for (let i = 1; i < k; i++) {
+    terme *= ((n - i + 1) / i) * (p / (1 - p))
+    somme += terme
+  }
+  return Math.max(0, 1 - somme)
+}
+
+/** Quantile de la loi Gamma(k, 1), k entier : P(k, x) = 1 − e^(−x) Σ_{i<k} x^i / i!, inversée par dichotomie. */
+function quantileGamma(k: number, q: number): number {
+  const repartition = (x: number): number => {
+    let terme = 1
+    let somme = 1
+    for (let i = 1; i < k; i++) {
+      terme *= x / i
+      somme += terme
+    }
+    return 1 - Math.exp(-x) * somme
+  }
+  let bas = 0
+  let haut = k + 20 * Math.sqrt(k) + 20
+  for (let tour = 0; tour < 200; tour++) {
+    const milieu = (bas + haut) / 2
+    if (repartition(milieu) < q) bas = milieu
+    else haut = milieu
+  }
+  return (bas + haut) / 2
+}
+
+/** Médiane de la durée d’un défi, en tours de f essais (même modèle que `rapportP90P10Theorique`). */
+export function medianeToursTheorique(k: number, p: number, fils = 1): number {
+  if (p < 0.01) return quantileGamma(k, 0.5) / p / fils
+  let r = 1
+  while (probabiliteAuMoins(k, r * fils, p) < 0.5) r++
+  return r
+}
+
+/** Difficultés candidates : toutes pour SHA-256 et Argon2id (bits), une échelle de ≈ 5 % pour l’effort d’Equi-X. */
+function difficultesCandidates(scenario: Scenario): number[] {
+  const plancher = scenario.difficulteMin ?? 0
+  if (scenario.algorithme !== 'equix') return Array.from({ length: (scenario.algorithme === 'sha256' ? 40 : 20) + 1 }, (_, d) => d).filter((d) => d >= plancher)
+  const liste = new Set<number>()
+  for (let effort = Math.max(1, plancher); effort <= 100_000; effort = Math.max(effort + 1, Math.round(effort * 1.05))) liste.add(effort)
+  return [...liste]
+}
+
+/**
+ * Difficulté dont la médiane prévue approche la cible, les parts étant chaque
+ * fois celles de la théorie (`partsTheoriques`) : `msParTour` est la durée d’un
+ * tour d’essais sur `fils` fils (un essai par fil). Le calibrage mesure puis
+ * corrige cette durée sur des défis réels.
+ */
+export function choisirDifficulte(scenario: Scenario, fils: number, cibleMs: number, msParTour: number): { difficulte: number; parts: number; medianePrevueMs: number } {
+  let meilleur: { difficulte: number; parts: number; medianePrevueMs: number } | undefined
+  for (const difficulte of difficultesCandidates(scenario)) {
+    const candidat = { ...scenario, difficulte } as Scenario
+    const parts = partsTheoriques(candidat, fils)
+    const medianePrevueMs = medianeToursTheorique(parts, probabiliteSucces(candidat), fils) * msParTour
+    if (!meilleur || Math.abs(Math.log(medianePrevueMs / cibleMs)) < Math.abs(Math.log(meilleur.medianePrevueMs / cibleMs))) meilleur = { difficulte, parts, medianePrevueMs }
+    // Au-delà de dix fois la cible, les difficultés suivantes ne feront que s’en éloigner.
+    if (medianePrevueMs > 10 * cibleMs) break
+  }
+  return meilleur!
+}
+
+/** Plus petit nombre de parts (1 à PARTS_MAX) dont le p90/p10 théorique ne dépasse pas 2, pour cette difficulté et ces fils. */
+export function partsTheoriques(scenario: Pick<Scenario, 'algorithme' | 'difficulte'>, fils = 1): number {
+  const p = probabiliteSucces(scenario as Scenario)
+  for (let k = 1; k <= PARTS_MAX; k++) if (rapportP90P10Theorique(k, p, fils) <= REGULARITE_MAX) return k
+  return PARTS_MAX
 }
 
 /** Probabilité qu’un essai réussisse. */

@@ -522,24 +522,32 @@ standardisé, qui fait partie de la démo seulement (rien n’en entre dans
   (`dureeDebitMs`), machine de référence du calibrage, et scénarios
   `{ id, libelle, algorithme, parametres, parts, difficulte, fils,
   sansParallelisation, repetitions }`. Son empreinte (SHA-256) identifie les
-  résultats. Valeurs par défaut arbitrées : défi visé ≈ 1 s (médiane, tous
-  les cœurs, sur le PC de référence), 80 % des défis dans un rapport ≤ 2 ;
-  SHA-256 13 parts de 19 bits ; Argon2id 16 Mio 12 parts de 2 bits et 64 Mio
-  5 parts de 1 bit (t = 1, p = 1 : sa mémoire se règle, comme celle
-  d’Equi-X) ; Equi-X n = 60 13 parts d’effort 33, n = 72 7 parts d’effort 7,
-  n = 80 3 parts d’effort 2 (≈ 1,3 s, gardé au-dessus de la cible, avec un
-  plancher de difficulté). La durée de mesure du débit reste provisoire.
+  résultats. Défi visé ≈ 1 s (médiane, tous les cœurs, sur le PC de
+  référence). **Le nombre de parts est fixé par la théorie** : un défi de k
+  parts demande T essais (loi binomiale négative : k succès de probabilité p),
+  soit ⌈T / f⌉ tours sur f fils ; pour p petit, une loi Gamma(k). k est le plus
+  petit nombre donnant p90/p10 ≤ 2, recalculé pour chaque difficulté (p en
+  dépend) avec les fils de la machine de référence (`partsTheoriques`). Valeurs
+  par défaut (8 fils) : SHA-256 15 parts de 19 bits (Gamma(14) donne 2,002,
+  juste au-dessus de 2) ; Argon2id 16 Mio 14 × 5 bits et 64 Mio 10 × 3 bits
+  (t = 1, p = 1 : sa mémoire se règle, comme celle d’Equi-X) ; Equi-X n = 60
+  13 × effort 30 ; n = 72 10 × effort 14 (≈ 2,9 s : sur 8 fils, rien entre
+  ≈ 0,6 s et ≈ 2,9 s ne tient p90/p10 ≤ 2) ; n = 80 1 × effort 2 (un essai dure
+  déjà ≈ 1,3 s ; plancher d’effort). Au-dessus de la cible, c’est signalé.
+  La durée de mesure du débit reste provisoire.
 - **Mode « calibrer »** (PC de référence seulement, tous les cœurs), qui se
   termine toujours par « Calibrage terminé. » avec la liste des scénarios en
   échec : une erreur consomme une tentative, au plus 3 par scénario, puis le
   scénario garde la dernière difficulté mesurée (`calibrage.echec: 'partiel'`)
-  ou reste tel quel (`'nonCalibre'`), et le calibrage passe au suivant. Pour
-  chaque scénario, la difficulté (issue de la simulation) est ajustée sur des
-  défis réels jusqu’à ce que la médiane approche 1 s, sans descendre sous son
-  plancher ; le nombre de parts ne change que si p90/p10 dépasse 2 sur 30
-  défis de contrôle. Le résultat est figé dans le fichier de scénarios (avec la
-  machine, la date, la médiane et p90/p10 obtenus), que les autres machines
-  importent tel quel. SHA-256 et Argon2id ne se règlent que par bits entiers :
+  ou reste tel quel (`'nonCalibre'`), et le calibrage passe au suivant. Le
+  calibrage ne règle que la difficulté : il la choisit par le modèle
+  (`choisirDifficulte`, parts théoriques pour chaque difficulté) d’après la
+  durée d’un tour d’essais, mesurée puis corrigée par la médiane de défis
+  réels. Un contrôle de régularité sur 100 défis, **informatif**, consigne
+  dans le fichier son p90/p10, sa conformité à ≤ 2 et la valeur théorique
+  (`calibrage.rapportP90P10`, `conforme`, `rapportP90P10Theorique`, `fils`),
+  pour constater si la règle tient. Le fichier figé s’importe tel quel sur les
+  autres machines. SHA-256 et Argon2id ne se règlent que par bits entiers :
   leur médiane reste à un facteur √2 près de la cible.
 - **Fils** : tous les cœurs par défaut (`hardwareConcurrency`, au-delà de 8
   si la machine en a), un seul pour les lignes `sansParallelisation` (latence
@@ -607,18 +615,23 @@ standardisé, qui fait partie de la démo seulement (rien n’en entre dans
   1,91 pour 16, 1,60 pour 30. Les 13 parts de la simulation étaient donc déjà
   à la limite. Le contrôle sur 30 défis est bruité : à 17 parts (1,87 en
   théorie), il dépasse 2 à tort dans 14 % des cas, à 23 parts dans 1,4 %.
-  Le passage de 13 à 30 parts pour SHA-256 (trois hausses de × 1,3, le
-  maximum) demande donc une dispersion réelle plus forte que celle de
-  l’algorithme. La mise en route des 8 Web Workers d’un défi n’en est pas la
+  Le passage de 13 à 30 parts pour SHA-256 (ancien calibrage, par hausses de
+  × 1,3) demandait donc une dispersion réelle plus forte que celle de
+  l’algorithme ; les parts suivent désormais la théorie, et le contrôle ne
+  fait que le constater. La mise en route des 8 Web Workers d’un défi n’en est pas la
   cause (35 ms, p10–p90 32–40 ms, soit ≈ 3,5 % d’un défi d’une seconde, presque
   constante). Les causes probables sont la machine : charge d’autres
   programmes (charge moyenne ≈ 12 sur 8 cœurs pendant les mesures),
   fréquence variable du turbo selon la température, 8 fils sur 8 cœurs
   logiques en concurrence avec le navigateur. Pour la réduire : calibrer sur
-  une machine au repos, sur secteur ; contrôler p90/p10 sur 100 défis plutôt
-  que 30 ; déduire le nombre de parts de la loi de Gamma plutôt que par hausses
-  de × 1,3 ; et, si l’on veut mesurer le calcul seul, garder les Web Workers
-  chauds d’un défi à l’autre en mesurant leur mise en route à part.
+  une machine au repos, sur secteur ; et, si l’on veut mesurer le calcul seul,
+  garder les Web Workers chauds d’un défi à l’autre en mesurant leur mise en
+  route à part. Le contrôle porte désormais sur 100 défis et les parts
+  suivent la théorie. Limite du modèle : il suppose des essais de même durée
+  lancés ensemble sur les f fils ; quand un défi tient en un ou deux tours
+  (Argon2id, Equi-X à effort faible), la mise en route des Web Workers et la
+  variation de durée d’un essai à l’autre, qu’il ignore, dominent la
+  dispersion mesurée.
 - **Banc natif** (sans navigateur, pour les extrapolations) :
   `cargo run --release -p pow-equix --features compilateur --example mesure --
   20 --n 60,72,80 --execution compile,interprete --fils 1,8 --json` : essais
