@@ -471,6 +471,38 @@ describe('garde-fou des fils', () => {
   })
 })
 
+describe('Argon2id réutilisable', () => {
+  test('même empreinte que hash-wasm, appel après appel, avec une seule instance par réglage', async () => {
+    const { argon2id } = await import('hash-wasm')
+    const { hacheurArgon2id } = await import('../demo/banc/argon2.ts')
+    const sel = new TextEncoder().encode('pow-equix/banc16')
+    for (const reglage of [{ memoireKio: 64, iterations: 1, parallelisme: 1 }, { memoireKio: 1024, iterations: 2, parallelisme: 1 }, { memoireKio: 512, iterations: 3, parallelisme: 2 }]) {
+      const hacheur = await hacheurArgon2id(reglage)
+      for (let rang = 0; rang < 5; rang++) {
+        const motDePasse = new TextEncoder().encode(`mot de passe ${rang}`)
+        const attendu = await argon2id({ password: motDePasse, salt: sel, iterations: reglage.iterations, parallelism: reglage.parallelisme, memorySize: reglage.memoireKio, hashLength: 32, outputType: 'binary' })
+        expect(hacheur.hacher(motDePasse, sel)).toEqual(attendu)
+      }
+    }
+  })
+
+  test('le module extrait correspond à hash-wasm (version figée)', async () => {
+    const { extraireArgon2, contenuFichier } = await import('../scripts/extraire-argon2.ts')
+    expect(readFileSync(resolve(racine, 'demo/banc/argon2-wasm.ts'), 'utf8')).toBe(contenuFichier(extraireArgon2()))
+  })
+
+  test('les essayeurs d’un même réglage partagent leur hacheur', async () => {
+    const { hacheurArgon2 } = await import('../demo/banc/moteurs.ts')
+    const reglage = { memoireKio: 64, iterations: 1, parallelisme: 1 }
+    const premier = await hacheurArgon2(reglage)
+    expect(await hacheurArgon2({ ...reglage })).toBe(premier)
+    // Un autre réglage remplace le précédent (sa mémoire est lâchée).
+    const autre = await hacheurArgon2({ ...reglage, memoireKio: 128 })
+    expect(autre).not.toBe(premier)
+    expect(await hacheurArgon2(reglage)).not.toBe(premier)
+  })
+})
+
 describe('le banc reste hors du paquet', () => {
   test('ni hash-wasm ni le banc dans dist/ ni dans les dépendances d’exécution', () => {
     const paquet = JSON.parse(readFileSync(resolve(racine, 'package.json'), 'utf8')) as { dependencies?: Record<string, string>; devDependencies: Record<string, string>; files: string[] }

@@ -501,9 +501,20 @@ standardisé, qui fait partie de la démo seulement (rien n’en entre dans
   (`demo/banc/sha256.ts` : état intermédiaire du préfixe, seul le bloc du nonce
   recalculé ; ≈ 1 µs par empreinte contre ≈ 3,5 µs avec hash-wasm appelé par
   empreinte et ≈ 5 µs avec WebCrypto, asynchrone, mesuré sous Bun) ;
-  Argon2id par hash-wasm (en `devDependencies`, version figée ; m, t, p
-  réglables, un essai = une empreinte de `graine ‖ nonce`, réussi selon les
-  bits nuls en tête) ; Equi-X par la bibliothèque elle-même. Tous en plusieurs
+  Argon2id par le module WebAssembly de hash-wasm (en `devDependencies`,
+  version figée ; m, t, p réglables, un essai = une empreinte de
+  `graine ‖ nonce`, réussi selon les bits nuls en tête), **avec une instance
+  gardée par Web Worker et par réglage** (`demo/banc/argon2.ts`, identique à
+  `argon2id()` de hash-wasm, vérifié par les tests). `argon2id()` de
+  hash-wasm crée trois instances WebAssembly par empreinte (Argon2, BLAKE2b-512,
+  BLAKE2b-256), chacune avec sa mémoire et un large espace d’adressage
+  réservé ; à 16 Mio, huit Web Workers en créent des centaines par seconde,
+  plus vite que le ramasse-miettes ne les libère : « Out of memory: Cannot
+  allocate Wasm memory for new instance » (reproduit dans Chromium en
+  150 défis). Réutilisée, l’instance est aussi plus rapide (≈ 21 ms au lieu de
+  34 ms par empreinte à 16 Mio) : les durées d’Argon2id mesurées avant ce
+  correctif ne sont plus comparables. Le module Equi-X de vérification du fil
+  principal est lui aussi gardé d’un défi à l’autre ; Equi-X par la bibliothèque elle-même. Tous en plusieurs
   parts, sur 1 à N Web Workers, annulables, avec progression.
 - **Fichier de scénarios** (`pow-equix-wasm/banc-scenarios`, modifiable dans la
   page, importable et exportable tel quel) : durée cible d’un défi
@@ -518,7 +529,11 @@ standardisé, qui fait partie de la démo seulement (rien n’en entre dans
   d’Equi-X) ; Equi-X n = 60 13 parts d’effort 33, n = 72 7 parts d’effort 7,
   n = 80 3 parts d’effort 2 (≈ 1,3 s, gardé au-dessus de la cible, avec un
   plancher de difficulté). La durée de mesure du débit reste provisoire.
-- **Mode « calibrer »** (PC de référence seulement, tous les cœurs) : pour
+- **Mode « calibrer »** (PC de référence seulement, tous les cœurs), qui se
+  termine toujours par « Calibrage terminé. » avec la liste des scénarios en
+  échec : une erreur consomme une tentative, au plus 3 par scénario, puis le
+  scénario garde la dernière difficulté mesurée (`calibrage.echec: 'partiel'`)
+  ou reste tel quel (`'nonCalibre'`), et le calibrage passe au suivant. Pour
   chaque scénario, la difficulté (issue de la simulation) est ajustée sur des
   défis réels jusqu’à ce que la médiane approche 1 s, sans descendre sous son
   plancher ; le nombre de parts ne change que si p90/p10 dépasse 2 sur 30
@@ -587,6 +602,23 @@ standardisé, qui fait partie de la démo seulement (rien n’en entre dans
   `pow-equix-wasm/banc-attaque`, débits extrapolés à 10 000 € et 1 000 000 €),
   rapportés au pire appareil et à l’appareil médian, et résistance au déni de
   service (vérifications par seconde, tous les cœurs).
+- **Dispersion mesurée et nombre de parts** : pour k parts, l’algorithme seul
+  donne un p90/p10 d’une loi de Gamma(k) : 2,06 pour 13 parts, 2,00 pour 14,
+  1,91 pour 16, 1,60 pour 30. Les 13 parts de la simulation étaient donc déjà
+  à la limite. Le contrôle sur 30 défis est bruité : à 17 parts (1,87 en
+  théorie), il dépasse 2 à tort dans 14 % des cas, à 23 parts dans 1,4 %.
+  Le passage de 13 à 30 parts pour SHA-256 (trois hausses de × 1,3, le
+  maximum) demande donc une dispersion réelle plus forte que celle de
+  l’algorithme. La mise en route des 8 Web Workers d’un défi n’en est pas la
+  cause (35 ms, p10–p90 32–40 ms, soit ≈ 3,5 % d’un défi d’une seconde, presque
+  constante). Les causes probables sont la machine : charge d’autres
+  programmes (charge moyenne ≈ 12 sur 8 cœurs pendant les mesures),
+  fréquence variable du turbo selon la température, 8 fils sur 8 cœurs
+  logiques en concurrence avec le navigateur. Pour la réduire : calibrer sur
+  une machine au repos, sur secteur ; contrôler p90/p10 sur 100 défis plutôt
+  que 30 ; déduire le nombre de parts de la loi de Gamma plutôt que par hausses
+  de × 1,3 ; et, si l’on veut mesurer le calcul seul, garder les Web Workers
+  chauds d’un défi à l’autre en mesurant leur mise en route à part.
 - **Banc natif** (sans navigateur, pour les extrapolations) :
   `cargo run --release -p pow-equix --features compilateur --example mesure --
   20 --n 60,72,80 --execution compile,interprete --fils 1,8 --json` : essais
