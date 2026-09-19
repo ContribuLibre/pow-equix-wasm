@@ -156,7 +156,7 @@ function prevoir(): void {
     [t.essaisAttendus, t.essaisAttendusValeur(nombres.format(essais))],
     [t.executionPrevue, prevue === null ? t.aucuneExecution : `${t.executions[prevue].replace(' *', '')}${prevue === 'wasmCompile' ? '' : t.plusLentQueCompile(nombres.format(ralentissement(prevue, 'wasmCompile')))}`],
     [t.dureeEssai, t.dureeEssaiValeur(duree(msParEssai(execution, choix.n)))],
-    ...(adaptatif ? [[t.parallelisation, filsDeDepart === null ? t.parallelisationAdaptative : t.parallelisationMemoire(filsDeDepart)] as [string, string]] : []),
+    [t.parallelisation, adaptatif ? (filsDeDepart === null ? t.parallelisationAdaptative : t.parallelisationMemoire(filsDeDepart)) : t.parallelisationFixe(Number(champFils.value))],
     [t.dureeEstimee, t.dureeAvecFils(duree(estimerDuree({ effort: choix.effort, nombre: choix.nombre, execution, fils, n: choix.n })), fils)],
     [t.memoireParFil, t.memoireParFilValeur(taille(parFil), taille(memoirePourN(choix.n)))],
     [t.memoireTotale, t.memoireTotaleValeur(taille(parFil * filsActifs), filsActifs)],

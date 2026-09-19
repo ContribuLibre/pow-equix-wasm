@@ -35,6 +35,7 @@ export interface Textes {
     parallelisation: string
     parallelisationAdaptative: string
     parallelisationMemoire: (fils: number) => string
+    parallelisationFixe: (fils: number) => string
     dureeEstimee: string
     dureeAvecFils: (duree: string, fils: number) => string
     memoireParFil: string
@@ -195,8 +196,9 @@ const fr: Textes = {
     dureeEssai: 'Durée d’un essai',
     dureeEssaiValeur: (duree) => `≈ ${duree} sur un cœur`,
     parallelisation: 'Parallélisation',
-    parallelisationAdaptative: 'Parallélisation adaptative : 1 fil au départ, puis jusqu’à 8 si l’appareil semble suffisamment puissant (davantage si ses caractéristiques matérielles sont connues)',
+    parallelisationAdaptative: 'adaptative : 1 fil au départ, puis jusqu’à 8 si l’appareil semble suffisamment puissant (davantage si ses caractéristiques matérielles sont connues)',
     parallelisationMemoire: (fils) => `adaptative : ${fils} fil(s) d’emblée, d’après la mémoire et les cœurs annoncés par l’appareil`,
+    parallelisationFixe: (fils) => fils === 0 ? 'aucune : calcul sur le fil principal' : `${fils} fil(s)`,
     dureeEstimee: 'Durée estimée',
     dureeAvecFils: (duree, fils) => `${duree} avec ${fils} fil(s)`,
     memoireParFil: 'Mémoire par fil',
@@ -354,8 +356,9 @@ const en: Textes = {
     dureeEssai: 'Duration of an attempt',
     dureeEssaiValeur: (duree) => `≈ ${duree} on one core`,
     parallelisation: 'Parallelism',
-    parallelisationAdaptative: 'Adaptive parallelism: 1 thread at first, then up to 8 if the device seems powerful enough (more if its hardware characteristics are known)',
+    parallelisationAdaptative: 'adaptive: 1 thread at first, then up to 8 if the device seems powerful enough (more if its hardware characteristics are known)',
     parallelisationMemoire: (fils) => `adaptive: ${fils} thread(s) from the start, from the memory and cores the device announces`,
+    parallelisationFixe: (fils) => fils === 0 ? 'none: computed on the main thread' : `${fils} thread(s)`,
     dureeEstimee: 'Estimated duration',
     dureeAvecFils: (duree, fils) => `${duree} with ${fils} thread(s)`,
     memoireParFil: 'Memory per thread',

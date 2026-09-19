@@ -13,7 +13,7 @@ avec du code natif d’environ × 20 à environ × 1,6. La mémoire se règle, d
 1,8 Mio (Equi-X) à 63 Mio par fil. Là où WebAssembly est désactivé, le même
 module traduit en JavaScript pur prend le relais, et le mode dégradé est signalé.
 
-- **Démo en ligne et calibrage :** <https://contribulibre.github.io/pow-equix-wasm/> (en français sous `/fr/`, en anglais sous `/en/` ; l’accueil choisit selon la langue du navigateur)
+- **Démo en ligne et calibrage :** <https://contribulibre.github.io/pow-equix-wasm/>
 - **Code source :** <https://github.com/ContribuLibre/pow-equix-wasm>
 - **Paquet npm :** [`pow-equix-wasm`](https://www.npmjs.com/package/pow-equix-wasm)
 
@@ -30,8 +30,8 @@ module traduit en JavaScript pur prend le relais, et le mode dégradé est signa
 ## Pourquoi Equi-X
 
 Une preuve de travail n’a de sens que si l’attaquant ne peut pas la calculer
-beaucoup plus vite que la personne honnête, et si le serveur la vérifie pour
-presque rien.
+beaucoup plus vite que la personne honnête. Il faut aussi pouvoir la vérifier
+avec très peu d'efforts.
 
 Le coût d’**un essai** est propre à chaque algorithme ; la difficulté règle
 ensuite le **nombre d’essais** à trouver. Ordres de grandeur pour une preuve
