@@ -110,6 +110,18 @@ async function resoudreHashcash(scenario: Scenario & { algorithme: 'sha256' | 'a
   }
 }
 
+/**
+ * Module Equi-X de vérification sur le fil principal, gardé d’une répétition à
+ * l’autre : chaque instance réserve sa mémoire (et un large espace d’adressage),
+ * qu’une instance par défi finirait par épuiser.
+ */
+let verificateurEquix: { octets: Uint8Array; module: Promise<ModuleEquix> } | undefined
+
+function moduleVerification(octets: Uint8Array): Promise<ModuleEquix> {
+  if (verificateurEquix?.octets !== octets) verificateurEquix = { octets, module: ModuleEquix.instancier(octets) }
+  return verificateurEquix.module
+}
+
 /** Une répétition : un défi neuf, résolu sur `fils` fils, puis vérifié. */
 export async function repetition(scenario: Scenario, fils: number, env: Environnement, onEssais: (essais: number, parts: number) => void = () => {}): Promise<Repetition> {
   env.signal?.throwIfAborted()
@@ -120,7 +132,7 @@ export async function repetition(scenario: Scenario, fils: number, env: Environn
       octets: env.octetsEquix, graine, effort: scenario.difficulte, nombre: scenario.parts, n, compilation, fils, signal: env.signal,
       onProgression: ({ essais, parts }) => onEssais(essais, parts),
     })
-    const module = await ModuleEquix.instancier(env.octetsEquix)
+    const module = await moduleVerification(env.octetsEquix)
     const debut = performance.now()
     const valide = module.verifier(graine, resultat.parts, scenario.difficulte, scenario.parts, n)
     const verification = performance.now() - debut

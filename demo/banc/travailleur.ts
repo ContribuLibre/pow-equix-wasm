@@ -34,13 +34,14 @@ async function unEssai(nonce: number): Promise<void> {
     const module = await moduleEquix()
     if (compilation === 'jamais') module.essayer(config!.graine, nonce, 1, n)
     else await module.essayerCompile(config!.graine, nonce, 1, n)
-  } else await essayer!(nonce)
+  } else essayer!(nonce)
 }
 
 async function traiter(message: { type: string; [cle: string]: unknown }): Promise<void> {
   if (message.type === 'config') {
     config = message as unknown as Config
-    essayer = config.algorithme === 'equix' ? undefined : essayeur(config.algorithme, config.parametres as ParametresArgon2id, config.graine)
+    // Un hacheur Argon2id par réglage et par Web Worker, réutilisé d’un défi à l’autre.
+    essayer = config.algorithme === 'equix' ? undefined : await essayeur(config.algorithme, config.parametres as ParametresArgon2id, config.graine)
     return
   }
   if (!config) throw new Error('Web Worker du banc sans configuration.')
@@ -49,7 +50,7 @@ async function traiter(message: { type: string; [cle: string]: unknown }): Promi
     const fin = message.fin as number
     const trouves: number[] = []
     const depart = performance.now()
-    for (let nonce = debut; nonce < fin; nonce++) if ((await essayer!(nonce)) >= config.difficulte) trouves.push(nonce)
+    for (let nonce = debut; nonce < fin; nonce++) if (essayer!(nonce) >= config.difficulte) trouves.push(nonce)
     portee.postMessage({ type: 'plage', debut, fin, trouves, essais: fin - debut, dureeMs: performance.now() - depart })
   } else if (message.type === 'calibrer') {
     const duree = message.dureeMs as number
@@ -75,7 +76,7 @@ async function traiter(message: { type: string; [cle: string]: unknown }): Promi
       verifier = () => module.verifier(config!.graine, preuve, 1, 1, n)
     } else {
       // Le nonce 0 est valide à la difficulté 0 : chaque vérification recalcule une empreinte complète.
-      verifier = async () => (await essayer!(0)) >= 0
+      verifier = () => essayer!(0) >= 0
     }
     await verifier()
     const depart = performance.now()

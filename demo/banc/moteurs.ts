@@ -4,7 +4,7 @@
 // Argon2id : mot de passe = graine ‖ nonce, sel fixe, empreinte de 32 octets.
 // Equi-X passe par la bibliothèque elle-même.
 
-import { argon2id } from 'hash-wasm'
+import { type HacheurArgon2, hacheurArgon2id } from './argon2.ts'
 import { hacheurHashcash } from './sha256.ts'
 import type { ParametresArgon2id } from './scenarios.ts'
 
@@ -31,30 +31,46 @@ function avecNonce(graine: Uint8Array, nonce: number): Uint8Array {
   return message
 }
 
+/**
+ * Hacheurs Argon2id gardés, un par réglage dans ce contexte (Web Worker ou
+ * fil principal) : leur instance WebAssembly et sa mémoire de m Kio sont
+ * réutilisées d’une empreinte à l’autre, au lieu d’en créer une par empreinte.
+ */
+const hacheurs = new Map<string, Promise<HacheurArgon2>>()
+
+export function hacheurArgon2(parametres: ParametresArgon2id): Promise<HacheurArgon2> {
+  const cle = `${parametres.memoireKio}:${parametres.iterations}:${parametres.parallelisme}`
+  let hacheur = hacheurs.get(cle)
+  if (!hacheur) {
+    // Un seul réglage à la fois : les autres instances sont lâchées (leur mémoire avec).
+    hacheurs.clear()
+    hacheur = hacheurArgon2id(parametres)
+    hacheurs.set(cle, hacheur)
+  }
+  return hacheur
+}
+
 export async function empreinteArgon2id(parametres: ParametresArgon2id, graine: Uint8Array, nonce: number): Promise<Uint8Array> {
-  return argon2id({
-    password: avecNonce(graine, nonce), salt: SEL_ARGON2, iterations: parametres.iterations, parallelism: parametres.parallelisme,
-    memorySize: parametres.memoireKio, hashLength: 32, outputType: 'binary',
-  })
+  return (await hacheurArgon2(parametres)).hacher(avecNonce(graine, nonce), SEL_ARGON2)
 }
 
 /** Essayeur d’un défi : nombre de bits nuls en tête pour un nonce. */
-export type Essayeur = (nonce: number) => number | Promise<number>
+export type Essayeur = (nonce: number) => number
 
-export function essayeur(algorithme: 'sha256' | 'argon2id', parametres: ParametresArgon2id | Record<string, never>, graine: Uint8Array): Essayeur {
+export async function essayeur(algorithme: 'sha256' | 'argon2id', parametres: ParametresArgon2id | Record<string, never>, graine: Uint8Array): Promise<Essayeur> {
   if (algorithme === 'sha256') {
     const hacheur = hacheurHashcash(graine)
     return (nonce) => hacheur.zerosEnTete(nonce)
   }
-  const argon = parametres as ParametresArgon2id
-  return async (nonce) => zerosEnTete(await empreinteArgon2id(argon, graine, nonce))
+  const argon = await hacheurArgon2(parametres as ParametresArgon2id)
+  return (nonce) => zerosEnTete(argon.hacher(avecNonce(graine, nonce), SEL_ARGON2))
 }
 
 /** Vérifie les nonces d’une preuve : tous distincts, chacun à la difficulté voulue. */
 export async function verifierNonces(algorithme: 'sha256' | 'argon2id', parametres: ParametresArgon2id | Record<string, never>, graine: Uint8Array, nonces: readonly number[], difficulte: number): Promise<boolean> {
   if (new Set(nonces).size !== nonces.length) return false
-  const essayer = essayeur(algorithme, parametres, graine)
-  for (const nonce of nonces) if ((await essayer(nonce)) < difficulte) return false
+  const essayer = await essayeur(algorithme, parametres, graine)
+  for (const nonce of nonces) if (essayer(nonce) < difficulte) return false
   return true
 }
 
