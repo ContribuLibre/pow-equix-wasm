@@ -6,8 +6,9 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import {
-  GRAINE_MAX, ModuleEquix, REFERENCE_MS_PAR_ESSAI, TAILLE_PART, construireGraine, depuisHexadecimal, essaisAttendus, estimerDuree, hexadecimal,
-  moteurRetenu, probabiliteEssai, ralentissement, resoudre, webAssemblyDisponible,
+  GRAINE_MAX, ModuleEquix, N_VALIDES, REFERENCE_MS_PAR_ESSAI, TAILLE_PART, VERSION_FORMAT, construireGraine, depuisHexadecimal, essaisAttendus, estimerDuree,
+  executionPrevue, genererModuleHashx, hexadecimal, memoirePourN, moteurRetenu, msParEssai, nPourMemoire, probabiliteEssai, ralentissement, resoudre,
+  taillePart, webAssemblyDisponible,
 } from '../dist/index.js'
 import { creerExportsEquixJs } from '../dist/equix-js.js'
 import { SHA256_EQUIX, octetsEquix } from '../dist/octets.js'
@@ -76,19 +77,22 @@ describe('résolution et vérification', () => {
     const progression: number[] = []
     const resultat = await resoudre({ octets, graine, effort: 1, nombre: 4, fils: 2, onProgression: ({ essais }) => progression.push(essais) })
     expect(resultat.fils).toBe(2)
+    expect(resultat.compilation).toBe(true)
     expect(progression.at(-1)).toBe(resultat.essais)
     // Chaque fil garde en mémoire la zone de travail du solveur (≈ 1,8 Mo).
     expect(resultat.memoireOctets).toBeGreaterThan(2 * 1_800_000)
     expect((await ModuleEquix.instancier(octets)).verifier(graine, resultat.parts, 1, 4)).toBe(true)
   }, 60_000)
 
-  test('s’interrompt dès que le calcul est annulé, sur le fil courant comme dans les Web Workers', async () => {
+  test('s’interrompt dès que le calcul est annulé, sur le fil courant comme dans les Web Workers, compilé ou interprété', async () => {
     await expect(resoudre({ octets, graine, effort: 1, nombre: 1, signal: AbortSignal.abort() })).rejects.toMatchObject({ name: 'AbortError' })
-    for (const fils of [0, 2]) {
-      const annulation = new AbortController()
-      // Effort inatteignable en pratique : seul l’arrêt demandé termine le calcul.
-      const calcul = resoudre({ octets, graine, effort: 2 ** 30, nombre: 1, fils, signal: annulation.signal, onProgression: ({ essais }) => { if (essais >= 2) annulation.abort() } })
-      await expect(calcul).rejects.toMatchObject({ name: 'AbortError' })
+    for (const compilation of ['auto', 'jamais'] as const) {
+      for (const fils of [0, 2]) {
+        const annulation = new AbortController()
+        // Effort inatteignable en pratique : seul l’arrêt demandé termine le calcul.
+        const calcul = resoudre({ octets, graine, effort: 2 ** 30, nombre: 1, fils, compilation, signal: annulation.signal, onProgression: ({ essais }) => { if (essais >= 2) annulation.abort() } })
+        await expect(calcul).rejects.toMatchObject({ name: 'AbortError' })
+      }
     }
   }, 60_000)
 
@@ -96,7 +100,134 @@ describe('résolution et vérification', () => {
     await expect(resoudre({ octets, graine, effort: 0, nombre: 1 })).rejects.toThrow('Paramètres de preuve invalides.')
     await expect(resoudre({ octets, graine, effort: 1, nombre: 65 })).rejects.toThrow('Paramètres de preuve invalides.')
     await expect(resoudre({ octets, graine: new Uint8Array(0), effort: 1, nombre: 1 })).rejects.toThrow('Paramètres de preuve invalides.')
+    for (const n of [0, 56, 62, 84, 60.5]) await expect(resoudre({ octets, graine, effort: 1, nombre: 1, n })).rejects.toThrow('Paramètres de preuve invalides.')
+    await expect(resoudre({ octets, graine, effort: 1, nombre: 1, compilation: 'toujours' as 'auto' })).rejects.toThrow('Option de compilation invalide.')
+    const module = await ModuleEquix.instancier(octets)
+    expect(() => module.essayer(graine, 0, 1, 62)).toThrow('Graine, effort ou n invalide.')
+    await expect(module.essayerCompile(graine, 0, 0, 60)).rejects.toThrow('Graine, effort ou n invalide.')
   })
+
+  test('les preuves produites par la version 0.2.1 restent valides (n = 60)', async () => {
+    // Graine et preuve (effort 3, 3 parts) calculées avec pow-equix-wasm 0.2.1.
+    const graine021 = depuisHexadecimal('706f772d65717569782d7761736d2f7465737400ff0f3a964c682be5f7fe39de98fa2379ef5226b6692cea9ded960a191e57c4e5')!
+    const preuve = depuisHexadecimal('0200000050a07aa6c610eaf09915b1f0c02daff403000000405c00a63fa969ae8ccbdae2b51175e4060000009b5cbd7d66a0ceb622731b94090a0cf9')!
+    expect(graine021).toEqual(await construireGraine('pow-equix-wasm/test', '{"version":"0.2.1"}'))
+    expect(VERSION_FORMAT).toBe(2)
+    for (const module of [await ModuleEquix.instancier(octets), ModuleEquix.depuisJs(creerExportsEquixJs)]) {
+      expect(module.verifier(graine021, preuve, 3, 3)).toBe(true)
+      expect(module.verifier(graine021, preuve, 3, 3, 60)).toBe(true)
+      expect(module.verifier(graine021, preuve, 3, 3, 64)).toBe(false)
+    }
+  })
+})
+
+describe('mémoire réglable (n)', () => {
+  test('mémoire, taille des parts et choix de n', () => {
+    // Même mémoire de travail qu’Equi-X (1 895 424 octets), aux compteurs de seaux près.
+    expect(memoirePourN(60)).toBeGreaterThan(1_890_000)
+    expect(memoirePourN(60)).toBeLessThan(1_900_000)
+    for (const [index, n] of N_VALIDES.entries()) if (index > 0) expect(memoirePourN(n) / memoirePourN(N_VALIDES[index - 1]!)).toBeGreaterThan(1.9)
+    expect(memoirePourN(80) / 1024 / 1024).toBeCloseTo(63, 0)
+    expect(() => memoirePourN(62)).toThrow('n invalide')
+    expect(nPourMemoire(0.5)).toBe(60)
+    expect(nPourMemoire(2)).toBe(60)
+    expect(nPourMemoire(4)).toBe(64)
+    expect(nPourMemoire(16)).toBe(72)
+    expect(nPourMemoire(1000)).toBe(80)
+    expect(taillePart()).toBe(TAILLE_PART)
+    expect(taillePart(64)).toBe(36)
+  })
+
+  test('une preuve à n = 64 se résout, se vérifie, et n’est valable que pour ce n', async () => {
+    const resultat = await resoudre({ octets, graine, effort: 2, nombre: 2, fils: 0, n: 64 })
+    expect(resultat.n).toBe(64)
+    expect(resultat.compilation).toBe(true)
+    expect(resultat.parts.length).toBe(2 * 36)
+    const module = await ModuleEquix.instancier(octets)
+    expect(module.verifier(graine, resultat.parts, 2, 2, 64)).toBe(true)
+    expect(ModuleEquix.depuisJs(creerExportsEquixJs).verifier(graine, resultat.parts, 2, 2, 64)).toBe(true)
+    expect(module.verifier(graine, resultat.parts, 2, 2, 68)).toBe(false)
+    expect(module.verifier(graine, resultat.parts, 2, 2)).toBe(false)
+    expect(module.verifier(graine, resultat.parts.slice(0, 40), 2, 2, 64)).toBe(false)
+    for (const octet of [0, 4, 20, 35, 40]) {
+      const alteree = resultat.parts.slice()
+      alteree[octet]! ^= 0x08
+      expect(module.verifier(graine, alteree, 2, 2, 64)).toBe(false)
+    }
+    // Plus de mémoire qu’à n = 60 : environ 3,8 Mio de mémoire de travail.
+    expect(resultat.memoireOctets).toBeGreaterThan(memoirePourN(64))
+  }, 60_000)
+
+  test('les Web Workers résolvent aussi à n = 68, en mode compilé', async () => {
+    const vues: Array<{ n: number; compilation: boolean }> = []
+    const resultat = await resoudre({ octets, graine, effort: 1, nombre: 2, fils: 2, n: 68, onProgression: (progression) => vues.push(progression) })
+    expect(resultat.fils).toBe(2)
+    expect(resultat.compilation).toBe(true)
+    expect(vues.every((vue) => vue.n === 68 && vue.compilation)).toBe(true)
+    expect(resultat.memoireOctets).toBeGreaterThan(2 * memoirePourN(68))
+    expect((await ModuleEquix.instancier(octets)).verifier(graine, resultat.parts, 1, 2, 68)).toBe(true)
+  }, 60_000)
+})
+
+interface ExportsBruts {
+  memory: WebAssembly.Memory
+  tampon_adresse(): number
+  tampon_taille(): number
+  zone_programme(): number
+  preparer(longueur: number, compteur: number, n: number): number
+  remplir(): void
+}
+
+describe('compilation des programmes HashX en WebAssembly', () => {
+  test('la table compilée est identique, octet pour octet, à celle de l’interprète', async () => {
+    const { instance } = await WebAssembly.instantiate(octets.slice(), {})
+    const exports = instance.exports as unknown as ExportsBruts
+    const tampon = (): Uint8Array => new Uint8Array(exports.memory.buffer, exports.tampon_adresse(), exports.tampon_taille())
+    let comparees = 0
+    // n = 72 couvre les valeurs de plus de 64 bits ; n = 80 (14 s d’interprète) est couvert côté Rust.
+    for (const [n, compteurs] of [[60, 6], [68, 2], [72, 1]] as const) {
+      for (let compteur = 0; compteur < compteurs; compteur++) {
+        tampon().set(graine)
+        if (exports.preparer(graine.length, compteur, n) !== 1) continue
+        const zone = exports.zone_programme()
+        const description = tampon().slice(zone, zone + 48 + 4096)
+        const vue = new DataView(description.buffer)
+        const [elements, basse, haute] = [vue.getUint32(4, true), vue.getUint32(8, true), vue.getUint32(12, true)]
+        expect(elements).toBe(2 ** (n / 4 + 1))
+        expect(haute !== 0).toBe(n > 64)
+        const module = genererModuleHashx(description)
+        expect(WebAssembly.validate(module)).toBe(true)
+        const { instance: programme } = await WebAssembly.instantiate(module, { e: { m: exports.memory } })
+        ;(programme.exports.remplir as (debut: number, fin: number) => void)(0, elements)
+        const compilee = new Uint8Array(exports.memory.buffer, basse, elements * 8).slice()
+        const compileeHaute = haute ? new Uint8Array(exports.memory.buffer, haute, elements * 4).slice() : null
+        exports.remplir()
+        expect(compilee).toEqual(new Uint8Array(exports.memory.buffer, basse, elements * 8))
+        if (compileeHaute) expect(compileeHaute).toEqual(new Uint8Array(exports.memory.buffer, haute, elements * 4))
+        comparees++
+      }
+    }
+    expect(comparees).toBeGreaterThanOrEqual(7)
+  }, 120_000)
+
+  test('compilé et interprété donnent les mêmes solutions, en WebAssembly comme en JavaScript', async () => {
+    const wasm = await ModuleEquix.instancier(octets)
+    expect(wasm.compilation).toBe(true)
+    const js = ModuleEquix.depuisJs(creerExportsEquixJs)
+    // Le moteur JavaScript n’a pas de mémoire WebAssembly à partager : il interprète toujours.
+    expect(js.compilation).toBe(false)
+    for (const compteur of [0, 1, 2, 3]) expect(await wasm.essayerCompile(graine, compteur, 1)).toEqual(wasm.essayer(graine, compteur, 1))
+    expect(await wasm.essayerCompile(graine, 5, 1, 72)).toEqual(wasm.essayer(graine, 5, 1, 72))
+    expect(await js.essayerCompile(graine, 1, 1, 64)).toEqual(wasm.essayer(graine, 1, 1, 64))
+  }, 120_000)
+
+  test('compilation: jamais garde l’interprète, et le résultat reste vérifiable', async () => {
+    const vues: boolean[] = []
+    const resultat = await resoudre({ octets, graine, effort: 1, nombre: 1, fils: 1, compilation: 'jamais', onProgression: ({ compilation }) => vues.push(compilation) })
+    expect(resultat.compilation).toBe(false)
+    expect(vues.every((compilation) => !compilation)).toBe(true)
+    expect((await ModuleEquix.instancier(octets)).verifier(graine, resultat.parts, 1, 1)).toBe(true)
+  }, 60_000)
 })
 
 describe('outils', () => {
@@ -147,17 +278,26 @@ describe('moteur JavaScript (sans WebAssembly)', () => {
 
   test('estime la durée et le ralentissement d’après les mesures de référence', () => {
     expect(ralentissement('wasm')).toBe(1)
+    expect(ralentissement('wasmCompile')).toBeLessThan(0.2)
     expect(ralentissement('jsSansJit')).toBeGreaterThan(100)
+    expect(ralentissement('wasm', 'wasmCompile')).toBeGreaterThan(5)
     // 4 parts à l’effort 1 : un peu moins de 5 essais, répartis sur autant de fils.
     const essais = essaisAttendus(1, 4)
     expect(estimerDuree({ effort: 1, nombre: 4, execution: 'wasm', fils: 1 })).toBeCloseTo(essais * REFERENCE_MS_PAR_ESSAI.wasm)
     expect(estimerDuree({ effort: 1, nombre: 4, execution: 'wasm', fils: 64 })).toBeCloseTo(REFERENCE_MS_PAR_ESSAI.wasm)
+    // Chaque pas de n double au moins la durée d’un essai.
+    expect(estimerDuree({ effort: 1, nombre: 4, execution: 'wasmCompile', fils: 1, n: 64 })).toBeCloseTo(essais * msParEssai('wasmCompile', 64))
+    expect(msParEssai('wasmCompile', 80)).toBeGreaterThan(32 * REFERENCE_MS_PAR_ESSAI.wasmCompile)
+    expect(executionPrevue({ octets })).toBe('wasmCompile')
+    expect(executionPrevue({ octets, compilation: 'jamais' })).toBe('wasm')
+    expect(executionPrevue({ js: creerExportsEquixJs })).toBe('js')
+    expect(executionPrevue({})).toBeNull()
   })
 
   test('la progression donne le moteur, la durée et une estimation du temps restant', async () => {
-    const vues: Array<{ moteur: string; dureeMs: number; restantEstimeMs: number | null; parts: number }> = []
+    const vues: Array<{ moteur: string; compilation: boolean; n: number; dureeMs: number; restantEstimeMs: number | null; parts: number }> = []
     await resoudre({ octets, graine, effort: 1, nombre: 3, fils: 0, onProgression: (progression) => vues.push(progression) })
-    expect(vues.every((vue) => vue.moteur === 'wasm')).toBe(true)
+    expect(vues.every((vue) => vue.moteur === 'wasm' && vue.compilation && vue.n === 60)).toBe(true)
     expect(vues[0]!.restantEstimeMs).not.toBeNull()
     expect(vues.at(-1)!.restantEstimeMs).toBe(0)
     expect(vues.at(-1)!.dureeMs).toBeGreaterThan(0)
