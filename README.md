@@ -25,29 +25,55 @@ relais, et le mode dégradé est signalé.
 
 Une preuve de travail n’a de sens que si l’attaquant ne peut pas la calculer
 beaucoup plus vite que la personne honnête, et si le serveur la vérifie pour
-presque rien. Ordres de grandeur pour une preuve réglée sur **une minute dans un
-navigateur, sur un cœur** :
+presque rien.
+
+Le coût d’**un essai** est propre à chaque algorithme ; la difficulté règle
+ensuite le **nombre d’essais** à trouver. Ordres de grandeur pour une preuve
+réglée sur **une minute dans un navigateur, sur un cœur** :
 
 | | SHA-256 (hashcash) | Argon2id (64 Mio par essai) | **Equi-X** |
 |---|---|---|---|
-| Un essai, navigateur | ≈ 0,1 à 10 µs | ≈ 0,3 à 1 s | **≈ 0,4 s** (mesuré) |
-| Mémoire pour résoudre | < 1 Kio | 64 Mio par essai en cours | **≈ 2 Mio** par essai en cours (mesuré) |
-| La même preuve sur matériel optimisé | carte graphique : ≈ 10 ms ; puce de minage : ≈ 1 µs | ≈ 10 à 30 s : la mémoire freine cartes graphiques et puces | **≈ 3 s** en code natif compilé (mesuré) ; programmes aléatoires conçus pour ne pas avantager les cartes graphiques |
+| Un essai dans le navigateur | ≈ 0,1 à 10 µs | ≈ 0,3 à 1 s | **≈ 0,4 s** (mesuré) |
+| Essais à réaliser pour 1 min | ≈ 10⁷ à 10⁹ | ≈ 60 à 200 | **≈ 150** |
+| Mémoire pendant le calcul | < 1 Kio | 64 Mio par essai en cours | **≈ 2 Mio** par essai en cours (mesuré) |
+| La même preuve sur matériel optimisé | carte graphique : ≈ 10 ms ; puce de minage : ≈ 1 µs | ≈ 10 à 30 s : la mémoire freine cartes graphiques et puces | **≈ 3 s** en code natif compilé (mesuré) |
 | Avantage du matériel optimisé | × 10³ à × 10⁷ | × 2 à × 5 | **≈ × 20** |
-| Vérifier une preuve | 1 empreinte : ≈ 1 µs, négligeable | 1 essai complet : ≈ 0,1 à 1 s **et** 64 Mio par vérification | **≈ 0,25 ms par part** en WebAssembly, ≈ 0,2 ms en natif (mesuré) ; pas de mémoire à réserver |
-
-- **SHA-256** : les cartes graphiques et, pire, les puces de minage Bitcoin la
-  calculent des milliers à des millions de fois plus vite qu’un navigateur. Des
-  outils existent pour résoudre ces défis en masse.
-- **Argon2id** : la mémoire exigée égalise bien le matériel, mais vérifier coûte
-  autant qu’un essai : chaque fausse preuve envoyée au serveur lui coûte des
-  dizaines de mégaoctets et des centaines de millisecondes.
-- **Equi-X** combine les deux qualités : un nouveau programme HashX tiré au sort
-  à chaque essai et environ 2 Mio de mémoire, mais une vérification qui ne
-  refait qu’une poignée d’évaluations.
+| Vérifier une preuve : temps | 1 empreinte, ≈ 1 µs | **1 essai complet, ≈ 0,1 à 1 s** | **≈ 0,25 ms par part** en WebAssembly, ≈ 0,2 ms en natif (mesuré) |
+| Vérifier une preuve : mémoire | négligeable | **64 Mio par vérification** | négligeable |
 
 Les chiffres « mesurés » viennent de ce dépôt (portable x86-64 récent) ; les
 autres sont des ordres de grandeur publics, à affiner avec la page de démo.
+
+- **SHA-256 est écarté** : cartes graphiques et puces de minage Bitcoin la
+  calculent des milliers à des millions de fois plus vite qu’un navigateur, et
+  des outils existent pour résoudre ces défis en masse.
+- **Argon2id est écarté à cause de sa vérification**, qui coûte autant qu’un
+  essai. Chaque preuve reçue, même fausse, oblige le serveur à refaire un calcul
+  complet : un attaquant qui envoie **100 fausses preuves par seconde**, sans
+  rien calculer lui-même, occupe 30 à 100 cœurs et 6,4 Gio de mémoire du
+  serveur. La preuve de travail, censée protéger le serveur, devient alors le
+  moyen le plus simple de le saturer (déni de service).
+- **Equi-X** garde l’égalisation du matériel sans ce défaut : un nouveau
+  programme HashX tiré au sort à chaque essai et environ 2 Mio de mémoire pour
+  résoudre, mais une vérification qui ne refait qu’une poignée d’évaluations.
+  Les mêmes 100 fausses preuves par seconde coûtent environ 2,5 % d’un cœur.
+
+### Et plus de mémoire ?
+
+Equi-X ne se règle pas en mémoire : ses ≈ 2 Mio découlent de ses paramètres
+fixes (2¹⁶ évaluations HashX par défi, triées pour trouver 16 valeurs dont la
+somme s’annule), et les changer donnerait un autre algorithme, sans l’analyse ni
+l’usage réel qu’en fait Tor. La famille dont il vient, Equihash, permet de monter
+la mémoire en gardant une vérification bon marché, mais l’expérience montre que
+la mémoire seule ne suffit pas : des puces spécialisées existent pour Equihash
+à 144 Mio. Et 64 Mio par cœur, sur un téléphone qui calcule sur huit cœurs,
+représentent 512 Mio.
+
+Surtout, l’avantage de × 20 d’Equi-X ne vient pas de la mémoire, mais de la
+compilation : en natif, chaque programme HashX est compilé en code machine,
+alors que le module WebAssembly l’interprète. Le levier le plus prometteur est
+donc de compiler ces programmes en WebAssembly dans le navigateur, pas
+d’augmenter la mémoire.
 
 ## Protocole
 
