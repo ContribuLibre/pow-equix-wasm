@@ -5,16 +5,21 @@
 import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { calibrer, calibrerDifficulte, debitMaximal, debitVerification, repetition, resumer } from '../demo/banc/executeur.ts'
+import { calibrer, calibrerDifficulte, debitMaximal, debitVerification, monterParPaliers, repetition, resumer } from '../demo/banc/executeur.ts'
+import { Garde, cleMemoire, paliers } from '../demo/banc/garde.ts'
+import { resumeMachine, validerConfigMachine } from '../demo/banc/machine.ts'
 import { tailleNonces, verifierNonces, zerosEnTete } from '../demo/banc/moteurs.ts'
 import {
-  BUDGET_MEMOIRE_INCONNU_MIO, type Scenario, SCENARIOS_PROVISOIRES, TENTATIVES_MAX, ajusterDifficulte, centile, debit100s, difficultePourDuree, empreinteFichier,
+  type Scenario, SCENARIOS_PROVISOIRES, TENTATIVES_MAX, ajusterDifficulte, centile, debit100s, difficultePourDuree, empreinteFichier,
   auDessusDeLaCible, essaisAttendusScenario, estimerScenario, fichierProvisoire, plafondFils, statistiques, validerFichierScenarios, validerScenarios,
 } from '../demo/banc/scenarios.ts'
 import { Stockage, type Support } from '../demo/banc/stockage.ts'
 import { type ExportBanc, FORMAT_BANC, VERSION_BANC } from '../demo/banc/schema.ts'
 import { hacheurHashcash } from '../demo/banc/sha256.ts'
-import { agreger, lireAttaque, lireExport, versMarkdown } from '../scripts/agreger-banc.ts'
+import { agreger, ficheResumee, lireAttaque, lireExport, versMarkdown } from '../scripts/agreger-banc.ts'
+import { spawnSync } from 'node:child_process'
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 
 const racine = resolve(import.meta.dir, '..')
 const env = {
@@ -75,7 +80,7 @@ describe('scénarios et statistiques', () => {
     expect(await empreinteFichier({ ...fichier, dureeCibleMs: 2000 })).not.toBe(empreinte)
   })
 
-  test('tous les cœurs par défaut, un fil sans parallélisation, et plafond mémoire signalé', () => {
+  test('tous les cœurs par défaut, un fil sans parallélisation, plafond de la mémoire annoncée et limite du garde-fou', () => {
     const argon64 = SCENARIOS_PROVISOIRES.find((s) => s.id === 'argon2id-64m-5x1')!
     const equix = SCENARIOS_PROVISOIRES.find((s) => s.id === 'equix-n60-13x33')!
     const seul: Scenario = { ...equix, id: 'seul', sansParallelisation: true }
@@ -85,8 +90,12 @@ describe('scénarios et statistiques', () => {
     // 4 Go : 1/32 → 128 Mio, soit 1 fil d’Argon2id à 64 Mio (65 Mio avec le reste), 41 d’Equi-X n = 60.
     expect(plafondFils(argon64, 8, 4)).toMatchObject({ demandes: 8, retenus: 1, applique: true, budgetMio: 128, source: 'deviceMemory' })
     expect(plafondFils(equix, 8, 4)).toMatchObject({ retenus: 8, applique: false })
-    // Mémoire inconnue : budget prudent.
-    expect(plafondFils(argon64, 8, null)).toMatchObject({ retenus: Math.floor(BUDGET_MEMOIRE_INCONNU_MIO / 65), applique: true, source: 'inconnue' })
+    // Mémoire inconnue : plus de budget fixe, jusqu’aux cœurs (32 ici) ; seul le garde-fou limite après un plantage.
+    expect(plafondFils(argon64, 32, null)).toMatchObject({ demandes: 32, retenus: 32, applique: false, source: null, budgetMio: null })
+    expect(plafondFils(argon64, 32, null, { limite: 4, raison: 'plantage à 8 fils' })).toMatchObject({ retenus: 4, applique: true, source: 'garde', limiteGarde: 4, raisonGarde: 'plantage à 8 fils' })
+    // Les deux à la fois : le plus strict l’emporte ; SHA-256 n’a pas de garde-fou.
+    expect(plafondFils(argon64, 32, 4, { limite: 4, raison: '' })).toMatchObject({ retenus: 1, source: 'deviceMemory' })
+    expect(plafondFils(sha, 32, null, { limite: 2, raison: '' })).toMatchObject({ retenus: 32, applique: false, limiteGarde: null })
   })
 
   test('calibrage des difficultés : estimation initiale et ajustement', () => {
@@ -220,11 +229,12 @@ describe('agrégation de plusieurs appareils', () => {
       dureeMs: (500 + rang * 5) * facteur, essais: 5, memoireOctets: 3_000_000, memoire: 'mesuree' as const, tailleOctets: 68,
       verification: { dureeMs: 1, memoireOctets: 1_200_000, memoire: 'mesuree' as const, valide: true },
     }))
-    const plafond = { demandes: 8, retenus: 8, applique: false, budgetMio: 256, source: 'deviceMemory' as const }
+    const plafond = { demandes: 8, retenus: 8, applique: false, budgetMio: 256, source: null, limiteGarde: null, raisonGarde: null }
     return {
       format: FORMAT_BANC, version: VERSION_BANC, date: '2026-09-19T00:00:00.000Z', paquet: '0.5.0', rapide: false, partiel: false,
       fichierScenarios: { ...fichierProvisoire(), empreinte: '0123456789abcdef' },
-      appareil: { detecte: { agent: 'Mozilla/5.0 (X11; Linux x86_64) Chrome/140.0', coeurs: 8, memoireAppareilGo: 8, ecran: null, plateforme: 'Linux', webAssembly: true }, saisi: { modele, processeur: '', gpu: '', ram: '', remarques: '' } },
+      appareil: { detecte: { agent: 'Mozilla/5.0 (X11; Linux x86_64) Chrome/140.0', coeurs: 8, memoireAppareilGo: 8, ecran: null, plateforme: 'Linux', webAssembly: true }, saisi: { modele, processeur: '', gpu: '', ram: '', remarques: '' }, machine: null },
+      gardeFils: {},
       scenarios: [resumer(scenario, repetitions, plafond, 35, { statut: 'complet', tentatives: 1, erreurs: [], debitMaximal: { concurrence: 8, dureeMs: 30_000, defis: 60 / facteur, parCentSecondes: 200 / facteur, dureeMoyenneDefiMs: 4000 * facteur } })],
       verification: [{ algorithme: 'equix', parametres: { n: 60, compilation: 'auto' }, fils: 8, verifications: 1000, dureeMs: 3000, parSeconde: 30_000 / facteur }],
     }
@@ -252,9 +262,44 @@ describe('agrégation de plusieurs appareils', () => {
     expect(versMarkdown(agregat)).toContain('| Equi-X essai |')
   })
 
+  test('les fiches machine donnent le nom des appareils et le tableau des appareils', () => {
+    const avecFiche = exportSynthetique('ignoré', 1)
+    avecFiche.appareil.machine = (validerConfigMachine(JSON.stringify(ficheLinux)) as { machine: NonNullable<ExportBanc["appareil"]["machine"]> }).machine
+    avecFiche.gardeFils = { 'equix:n=80': { tentative: null, reussis: [1, 2, 4], limite: 4, raison: 'plantage à 8 fils' } }
+    const agregat = agreger([avecFiche, exportSynthetique('Mobile', 4)])
+    expect(agregat.lignes.some((l) => l.libelle === 'sur TUXEDO Aura 15 Gen1 {AMD Ryzen 7 4700U with Radeon Graphics 2,0 GHz sans turbo, 8/8 cœurs, 31 Gio, AMD Renoir}')).toBe(true)
+    expect(agregat.appareils[0]).toEqual({
+      nom: 'TUXEDO Aura 15 Gen1', processeur: 'AMD Ryzen 7 4700U with Radeon Graphics', frequence: '2,0 GHz (turbo désactivé)', coeurs: '8 physiques / 8 logiques',
+      ram: '31 Gio', gpu: 'AMD Renoir', systeme: 'LMDE 7 (gigi)', limitesFils: 'equix:n=80 → 4',
+    })
+    expect(versMarkdown(agregat)).toContain('| TUXEDO Aura 15 Gen1 | AMD Ryzen 7 4700U with Radeon Graphics | 2,0 GHz (turbo désactivé) |')
+    // Un export de version 2 (sans fiche machine ni garde-fou) reste lisible.
+    const ancien = { ...exportSynthetique('Ancien', 1), version: 2 } as Record<string, unknown>
+    delete ancien.gardeFils
+    delete (ancien.appareil as Record<string, unknown>).machine
+    expect(ficheResumee(lireExport(JSON.stringify(ancien), 'v2.json')).nom).toBe('Ancien')
+  })
+
+  test('en ligne de commande, avec ou sans fichier d’attaque, tous les fichiers sont lus', () => {
+    const dossier = mkdtempSync(resolve(tmpdir(), 'agreger-'))
+    const premier = resolve(dossier, 'a.json')
+    const second = resolve(dossier, 'b.json')
+    writeFileSync(premier, JSON.stringify(exportSynthetique('PC 2020', 1)))
+    writeFileSync(second, JSON.stringify(exportSynthetique('Mobile', 4)))
+    const attaque = resolve(dossier, 'attaque.json')
+    writeFileSync(attaque, JSON.stringify({ format: 'pow-equix-wasm/banc-attaque', version: 1, materiels: [{ nom: '10 000 €', debits: { eq: 2000 } }] }))
+    for (const argumentsCommande of [[premier, second], ['--attaque', attaque, premier, second], [premier, '--attaque', attaque, second]]) {
+      const sortie = spawnSync('bun', [resolve(racine, 'scripts/agreger-banc.ts'), ...argumentsCommande], { encoding: 'utf8' })
+      expect(sortie.status).toBe(0)
+      expect(sortie.stdout).toContain('| sur PC 2020 |')
+      expect(sortie.stdout).toContain('| sur Mobile |')
+    }
+  })
+
   test('refuse un fichier d’un autre format ou d’une autre version', () => {
     expect(() => lireExport(JSON.stringify({ format: 'autre', version: 1 }), 'a.json')).toThrow('format « autre »')
     expect(() => lireExport(JSON.stringify({ format: FORMAT_BANC, version: 1 }), 'b.json')).toThrow('version 1')
+    expect(() => lireExport(JSON.stringify({ format: FORMAT_BANC, version: 4 }), 'b.json')).toThrow('version 4')
     expect(() => lireAttaque(JSON.stringify({ format: 'autre' }), 'c.json')).toThrow('pow-equix-wasm/banc-attaque')
   })
 })
@@ -311,6 +356,118 @@ describe('reprise après un plantage', () => {
     expect(Stockage.toutEffacer(support)).toBe(2)
     expect(support.length).toBe(2)
     expect(magasin.verifications()).toEqual([])
+  })
+})
+
+const ficheLinux = {
+  format: 'pow-equix-wasm/config-machine', version: 1, source: 'linux', date: '2026-09-19T17:37:51Z',
+  machine: { fabricant: 'TUXEDO', modele: 'Aura 15 Gen1' },
+  processeur: { modele: 'AMD Ryzen 7 4700U with Radeon Graphics', frequenceMaxMHz: 2000, turbo: false, coeursPhysiques: 8, coeursLogiques: 8, architecture: 'x86_64' },
+  memoire: { totaleOctets: 32_996_069_376 }, gpu: ['AMD Renoir'], systeme: { nom: 'LMDE 7 (gigi)', noyau: 'Linux 6.12' },
+}
+
+describe('fiche machine par commande', () => {
+  test('la commande Linux produit une fiche valide sur cette machine, sans réseau', () => {
+    const dossier = mkdtempSync(resolve(tmpdir(), 'config-machine-'))
+    const execution = spawnSync('bash', [resolve(racine, 'scripts/config-machine/linux.sh')], { cwd: dossier, encoding: 'utf8' })
+    expect(execution.status).toBe(0)
+    const lecture = validerConfigMachine(readFileSync(resolve(dossier, 'config-machine.json'), 'utf8'))
+    expect('machine' in lecture).toBe(true)
+    const machine = (lecture as { machine: { processeur: { coeursLogiques: number }; memoire: { totaleOctets: number } } }).machine
+    expect(machine.processeur.coeursLogiques).toBeGreaterThan(0)
+    expect(machine.memoire.totaleOctets).toBeGreaterThan(0)
+    expect(execution.stdout).toContain('"format": "pow-equix-wasm/config-machine"')
+    for (const script of ['linux.sh', 'macos.sh', 'android-termux.sh']) {
+      expect(spawnSync('bash', ['-n', resolve(racine, 'scripts/config-machine', script)]).status).toBe(0)
+      // Aucun appel réseau dans les commandes.
+      expect(readFileSync(resolve(racine, 'scripts/config-machine', script), 'utf8')).not.toMatch(/\b(curl|wget|nc|ssh)\b/)
+    }
+    expect(readFileSync(resolve(racine, 'scripts/config-machine/windows.ps1'), 'utf8')).not.toMatch(/Invoke-WebRequest|Invoke-RestMethod|Net\.WebClient/)
+  })
+
+  test('une fiche est validée, résumée comme les lignes du tableau, et refusée si mal formée', () => {
+    const lecture = validerConfigMachine(JSON.stringify(ficheLinux))
+    expect(resumeMachine((lecture as { machine: Parameters<typeof resumeMachine>[0] }).machine)).toBe('TUXEDO Aura 15 Gen1 {AMD Ryzen 7 4700U with Radeon Graphics 2,0 GHz sans turbo, 8/8 cœurs, 31 Gio, AMD Renoir}')
+    expect(resumeMachine({ ...(lecture as { machine: Parameters<typeof resumeMachine>[0] }).machine, machine: { fabricant: 'TUXEDO', modele: 'TUXEDO Aura 15 Gen1' } })).toMatch(/^TUXEDO Aura 15 Gen1 \{/)
+    expect(validerConfigMachine('pas du json')).toEqual({ erreur: 'ce n’est pas du JSON valide' })
+    expect(validerConfigMachine(JSON.stringify({ ...ficheLinux, format: 'autre' }))).toMatchObject({ erreur: expect.stringContaining('format') })
+    expect(validerConfigMachine(JSON.stringify({ ...ficheLinux, gpu: 'une seule' }))).toMatchObject({ erreur: expect.stringContaining('mal formés') })
+  })
+})
+
+describe('garde-fou des fils', () => {
+  function memoire(): Support {
+    const donnees = new Map<string, string>()
+    return {
+      getItem: (cle) => donnees.get(cle) ?? null,
+      setItem: (cle, valeur) => void donnees.set(cle, valeur),
+      removeItem: (cle) => void donnees.delete(cle),
+      key: (rang) => [...donnees.keys()][rang] ?? null,
+      get length() { return donnees.size },
+    }
+  }
+  const n80: Scenario = { id: 'e80', algorithme: 'equix', parametres: { n: 80, compilation: 'auto' }, parts: 3, difficulte: 2, repetitions: 100 }
+
+  test('paliers 1, 2, 4, 8… jusqu’aux cœurs, et réglage mémoire par algorithme', () => {
+    expect(paliers(32)).toEqual([1, 2, 4, 8, 16, 32])
+    expect(paliers(12)).toEqual([1, 2, 4, 8, 12])
+    expect(paliers(1)).toEqual([1])
+    expect(cleMemoire(n80)).toBe('equix:n=80')
+    expect(cleMemoire({ id: 'a', algorithme: 'argon2id', parametres: { memoireKio: 65_536, iterations: 1, parallelisme: 1 }, parts: 1, difficulte: 1, repetitions: 1 })).toBe('argon2id:m=65536:p=1')
+    expect(cleMemoire({ id: 's', algorithme: 'sha256', parametres: {}, parts: 1, difficulte: 1, repetitions: 1 })).toBeNull()
+  })
+
+  test('une tentative restée ouverte au rechargement fixe une limite définitive au dernier palier réussi', () => {
+    const support = memoire()
+    const avant = new Garde(support, 'appareil')
+    for (const palier of [1, 2, 4, 8]) {
+      avant.commencer('equix:n=80', palier)
+      avant.reussir('equix:n=80', palier)
+    }
+    avant.commencer('equix:n=80', 16) // l’onglet est tué ici
+    const apres = new Garde(support, 'appareil')
+    expect(apres.constaterPlantages()).toEqual([{ memoire: 'equix:n=80', fils: 16, limite: 8 }])
+    expect(apres.limite('equix:n=80')).toBe(8)
+    expect(apres.lire('equix:n=80').raison).toContain('tentative à 16 fils')
+    // Un plantage pendant le scénario à 8 fils (palier validé) : limite au palier en dessous, 4.
+    apres.commencer('equix:n=80', 8)
+    const encore = new Garde(support, 'appareil')
+    expect(encore.constaterPlantages()).toEqual([{ memoire: 'equix:n=80', fils: 8, limite: 4 }])
+    expect(encore.limite('equix:n=80')).toBe(4)
+    // La limite ne remonte jamais, et une annulation n’est pas un plantage.
+    encore.commencer('equix:n=80', 4)
+    encore.abandonner('equix:n=80')
+    expect(new Garde(support, 'appareil').constaterPlantages()).toEqual([])
+    expect(encore.instantane()['equix:n=80']!.limite).toBe(4)
+    // Autre appareil : pas concerné ; effacement explicite : limite levée.
+    expect(new Garde(support, 'autre').limite('equix:n=80')).toBeNull()
+    expect(Garde.toutEffacer(support)).toBe(1)
+    expect(encore.limite('equix:n=80')).toBeNull()
+  })
+
+  test('la montée par paliers sur de vrais Web Workers note chaque palier réussi', async () => {
+    const garde = new Garde(memoire(), 'appareil')
+    const vus: number[] = []
+    const atteint = await monterParPaliers(n80, 4, env, garde, (palier) => vus.push(palier))
+    expect(atteint).toBe(4)
+    expect(vus).toEqual([1, 2, 4])
+    expect(garde.reussis('equix:n=80')).toEqual([1, 2, 4])
+    // Déjà validés : rien à refaire.
+    vus.length = 0
+    expect(await monterParPaliers(n80, 4, env, garde, (palier) => vus.push(palier))).toBe(4)
+    expect(vus).toEqual([])
+    expect(garde.lire('equix:n=80').tentative).toBeNull()
+  }, 120_000)
+
+  test('les défis stockés à un autre nombre de fils sont écartés après un plantage', () => {
+    const magasin = new Stockage(memoire(), 'a', 'e', false)
+    const faite = { dureeMs: 10, essais: 1, memoireOctets: 0, memoire: 'estimee' as const, tailleOctets: 2, verification: { dureeMs: 1, memoireOctets: 0, memoire: 'estimee' as const, valide: true } }
+    magasin.alignerFils('s', 8)
+    magasin.modifier('s', (e) => { e.repetitions.push(faite) })
+    magasin.alignerFils('s', 8)
+    expect(magasin.lire('s').repetitions).toHaveLength(1)
+    magasin.alignerFils('s', 4)
+    expect(magasin.lire('s')).toMatchObject({ fils: 4, repetitions: [], erreurs: ['1 défi(s) à 8 fils écartés : repris à 4 fil(s)'] })
   })
 })
 

@@ -22,13 +22,15 @@
 
 import { readFileSync } from 'node:fs'
 import { basename } from 'node:path'
+import { nomMachine, resumeMachine } from '../demo/banc/machine.ts'
 import { descriptionAppareil } from '../demo/outils.ts'
 import type { Scenario } from '../demo/banc/scenarios.ts'
 import { auDessusDeLaCible, centile } from '../demo/banc/scenarios.ts'
 import { type ExportBanc, FORMAT_BANC, type ResultatScenario, VERSION_BANC } from '../demo/banc/schema.ts'
 
 export interface Ligne { libelle: string; valeurs: Array<string | null> }
-export interface Agregat { colonnes: Array<{ id: string; libelle: string; algorithme: Scenario['algorithme'] }>; lignes: Ligne[]; avertissements: string[] }
+export interface FicheResumee { nom: string; processeur: string; frequence: string; coeurs: string; ram: string; gpu: string; systeme: string; limitesFils: string }
+export interface Agregat { colonnes: Array<{ id: string; libelle: string; algorithme: Scenario['algorithme'] }>; appareils: FicheResumee[]; lignes: Ligne[]; avertissements: string[] }
 
 export const FORMAT_ATTAQUE = 'pow-equix-wasm/banc-attaque'
 export interface MaterielAttaque { nom: string; description?: string; debits: Record<string, number> }
@@ -42,14 +44,39 @@ export function lireAttaque(texte: string, nom: string): MaterielAttaque[] {
 export function lireExport(texte: string, nom: string): ExportBanc {
   const contenu = JSON.parse(texte) as Partial<ExportBanc>
   if (contenu.format !== FORMAT_BANC) throw new Error(`${nom} : format « ${String(contenu.format)} » inattendu (attendu : ${FORMAT_BANC})`)
-  if (contenu.version !== VERSION_BANC) throw new Error(`${nom} : version ${String(contenu.version)} non prise en charge (attendue : ${VERSION_BANC})`)
-  return contenu as ExportBanc
+  // Version 2 : sans fiche machine ni garde-fou des fils, encore lisible.
+  if (contenu.version !== VERSION_BANC && (contenu.version as unknown) !== 2) throw new Error(`${nom} : version ${String(contenu.version)} non prise en charge (attendues : 2 ou ${VERSION_BANC})`)
+  const lu = contenu as ExportBanc
+  return { ...lu, appareil: { ...lu.appareil, machine: lu.appareil.machine ?? null }, gardeFils: lu.gardeFils ?? {} }
 }
 
+/**
+ * Nom d’un appareil, comme les lignes du tableau du README : « modèle {PROC,
+ * RAM, GPU} », d’après la fiche machine (config-machine.json), sinon la saisie.
+ */
 export function nomAppareil(fichier: ExportBanc): string {
+  if (fichier.appareil.machine) return resumeMachine(fichier.appareil.machine)
   const saisi = fichier.appareil.saisi
-  const precision = [saisi.processeur, saisi.ram].filter(Boolean).join(', ')
+  const precision = [saisi.processeur, saisi.ram, saisi.gpu].filter(Boolean).join(', ')
   return `${saisi.modele || descriptionAppareil(fichier.appareil.detecte.agent)}${precision ? ` {${precision}}` : ''}`
+}
+
+/** Fiche détaillée d’un appareil, pour le tableau des appareils en tête d’agrégation. */
+export function ficheResumee(fichier: ExportBanc): FicheResumee {
+  const m = fichier.appareil.machine
+  const saisi = fichier.appareil.saisi
+  const detecte = fichier.appareil.detecte
+  const limites = Object.entries(fichier.gardeFils ?? {}).filter(([, etat]) => etat.limite !== null).map(([memoire, etat]) => `${memoire} → ${etat.limite}`)
+  return {
+    nom: m ? nomMachine(m) : saisi.modele || descriptionAppareil(detecte.agent),
+    processeur: m?.processeur.modele || saisi.processeur || '',
+    frequence: m?.processeur.frequenceMaxMHz ? `${(m.processeur.frequenceMaxMHz / 1000).toFixed(1).replace('.', ',')} GHz${m.processeur.turbo === false ? ' (turbo désactivé)' : m.processeur.turbo ? ' (turbo actif)' : ''}` : '',
+    coeurs: m?.processeur.coeursLogiques ? `${m.processeur.coeursPhysiques ?? '?'} physiques / ${m.processeur.coeursLogiques} logiques` : detecte.coeurs ? `${detecte.coeurs} logiques` : '',
+    ram: m?.memoire.totaleOctets ? `${Math.round(m.memoire.totaleOctets / 1024 ** 3)} Gio` : saisi.ram || (detecte.memoireAppareilGo ? `≥ ${detecte.memoireAppareilGo} Go (navigateur)` : ''),
+    gpu: m?.gpu.join(' + ') || saisi.gpu || '',
+    systeme: m?.systeme.nom ?? descriptionAppareil(detecte.agent),
+    limitesFils: limites.join(', '),
+  }
 }
 
 const mediane = (valeurs: number[]): number => centile([...valeurs].sort((a, b) => a - b), 0.5)
@@ -77,7 +104,7 @@ export function agreger(fichiers: ExportBanc[], attaques: MaterielAttaque[] = []
     if (fichier.rapide) avertissements.push(`${nomAppareil(fichier)} : mode rapide, résultats non représentatifs`)
     if (fichier.partiel) avertissements.push(`${nomAppareil(fichier)} : export partiel (${fichier.scenarios.filter((r) => r.statut !== 'complet').map((r) => `${r.scenario.id} ${r.statut}`).join(', ')})`)
     for (const resultat of fichier.scenarios) {
-      if (resultat.plafond.applique) avertissements.push(`${nomAppareil(fichier)} : ${resultat.scenario.id} plafonné à ${resultat.plafond.retenus} fils sur ${resultat.plafond.demandes} (mémoire)`)
+      if (resultat.plafond.applique) avertissements.push(`${nomAppareil(fichier)} : ${resultat.scenario.id} plafonné à ${resultat.plafond.retenus} fils sur ${resultat.plafond.demandes} (${resultat.plafond.source === 'garde' ? `limite après plantage : ${resultat.plafond.raisonGarde ?? ''}` : 'mémoire annoncée'})`)
     }
   }
   const empreintes = new Set(fichiers.map((fichier) => fichier.fichierScenarios.empreinte))
@@ -187,22 +214,28 @@ export function agreger(fichiers: ExportBanc[], attaques: MaterielAttaque[] = []
       }),
     })
   }
-  return { colonnes, lignes, avertissements }
+  return { colonnes, appareils: fichiers.map(ficheResumee), lignes, avertissements }
 }
 
 export function versMarkdown(agregat: Agregat): string {
+  const appareils = [
+    '| Appareil | Processeur | Fréquence max | Cœurs | RAM | GPU | Système | Limites de fils (plantage) |',
+    '|---|---|---|---|---|---|---|---|',
+    ...agregat.appareils.map((a) => `| ${a.nom} | ${a.processeur} | ${a.frequence} | ${a.coeurs} | ${a.ram} | ${a.gpu} | ${a.systeme} | ${a.limitesFils} |`),
+    '',
+  ]
   const entete = `| | ${agregat.colonnes.map((colonne) => colonne.libelle).join(' | ')} |`
   const separateur = `|---|${agregat.colonnes.map(() => '---').join('|')}|`
   const corps = agregat.lignes.map((ligne) => `| ${ligne.libelle} | ${ligne.valeurs.map((valeur) => valeur ?? '').join(' | ')} |`)
   const notes = agregat.avertissements.map((avertissement) => `> ⚠ ${avertissement}`)
-  return [...notes, ...(notes.length ? [''] : []), entete, separateur, ...corps, '', '¹ extrapolé : débit maximal mesuré sur moins de 100 s et ramené à 100 s, ou matériel d’attaque ; ≈ : extrapolé de la durée moyenne des défis seuls.'].join('\n')
+  return [...notes, ...(notes.length ? [''] : []), ...appareils, entete, separateur, ...corps, '', '¹ extrapolé : débit maximal mesuré sur moins de 100 s et ramené à 100 s, ou matériel d’attaque ; ≈ : extrapolé de la durée moyenne des défis seuls.'].join('\n')
 }
 
 if (import.meta.main) {
   const arguments_ = process.argv.slice(2)
   const indexAttaque = arguments_.indexOf('--attaque')
   const cheminAttaque = indexAttaque >= 0 ? arguments_[indexAttaque + 1] : undefined
-  const chemins = arguments_.filter((argument, index) => !argument.startsWith('--') && index !== indexAttaque + 1)
+  const chemins = arguments_.filter((argument, index) => !argument.startsWith('--') && (indexAttaque < 0 || index !== indexAttaque + 1))
   if (!chemins.length) {
     console.error('Usage : bun scripts/agreger-banc.ts fichier.json… [--attaque materiels.json] [--json]')
     process.exit(1)

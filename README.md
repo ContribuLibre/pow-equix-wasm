@@ -526,11 +526,20 @@ standardisé, qui fait partie de la démo seulement (rien n’en entre dans
   machine, la date, la médiane et p90/p10 obtenus), que les autres machines
   importent tel quel. SHA-256 et Argon2id ne se règlent que par bits entiers :
   leur médiane reste à un facteur √2 près de la cible.
-- **Fils** : tous les cœurs par défaut, un seul pour les lignes
-  `sansParallelisation`. Pour Argon2id et Equi-X, un plafond mémoire évite de
-  faire tuer l’onglet d’un téléphone : 1/32 de `navigator.deviceMemory`, ou
-  256 Mio (provisoire) quand il est inconnu ; l’export indique le plafond
-  appliqué (`plafond`), et l’agrégation le signale.
+- **Fils** : tous les cœurs par défaut (`hardwareConcurrency`, au-delà de 8
+  si la machine en a), un seul pour les lignes `sansParallelisation` (latence
+  comme débit). Pour Argon2id et Equi-X, deux protections contre un onglet tué
+  par manque de mémoire :
+  - si `navigator.deviceMemory` est connu, au plus 1/32 de cette mémoire ;
+  - toujours, un **garde-fou par paliers** : le banc monte à 1, 2, 4, 8…
+    fils jusqu’aux cœurs, en notant dans `localStorage`, pour chaque réglage
+    mémoire (`argon2id:m=…`, `equix:n=…`), « tentative à N fils » avant de
+    lancer un palier ou un scénario, et « N fils réussis » après. Un onglet
+    tué ne peut rien signaler : au chargement suivant, une tentative restée
+    ouverte est prise pour un plantage, et ce réglage est limité, sur cet
+    appareil, au dernier palier réussi en dessous. La limite ne se lève que
+    par le bouton prévu. L’export consigne les paliers, la limite et sa raison
+    (`gardeFils`, `plafond`), et l’agrégation les signale.
 - **Par scénario** : au moins 100 répétitions (un mode rapide, 10, marque les
   résultats comme non représentatifs). Chaque répétition est un défi seul
   sur tous les fils permis, ce que vit l’utilisateur (**latence**) : durée,
@@ -553,13 +562,26 @@ standardisé, qui fait partie de la démo seulement (rien n’en entre dans
 - **Débit de vérification** : parts valides vérifiées par seconde, par
   configuration, sur 1 fil et sur tous les cœurs (résistance au déni de service).
 - **Fiche de l’appareil** : navigateur, cœurs, `deviceMemory`, écran détectés,
-  et champs libres (modèle, processeur, GPU, RAM, remarques).
+  champs libres (modèle, processeur, GPU, RAM, remarques), et **fiche machine
+  par commande** : `scripts/config-machine/` (aussi montrés dans la page, avec
+  un bouton copier) écrit `config-machine.json` dans le dossier courant et
+  l’affiche, sans rien envoyer sur le réseau — modèle de la machine,
+  processeur, fréquence maximale et état du turbo, cœurs physiques et
+  logiques, mémoire vive, GPU, système. `linux.sh` (bash ou zsh : `/proc`,
+  `/sys`, `lscpu`, `lspci` s’il est là), `macos.sh` (`sysctl`,
+  `system_profiler`, `sw_vers`), `windows.ps1` (PowerShell 5 ou 7,
+  `Get-CimInstance`), `android-termux.sh` (Termux : `getprop`, `/proc`). La
+  fiche s’importe (fichier ou collage) dans la page du banc et part avec
+  l’export ; sans terminal, la saisie du modèle suffit.
 - **Estimation** de la durée totale avant de lancer, d’après des références,
   puis d’après une mesure de vitesse de quelques secondes sur l’appareil.
-- **Export** JSON complet, schéma `pow-equix-wasm/banc` version 2, décrit par
-  les types de `demo/banc/schema.ts`. `bun scripts/agreger-banc.ts
-  fichiers.json… [--attaque materiels.json] [--json]` en réunit plusieurs et
-  produit les lignes du tableau : débit maximal par appareil (et latence à
+- **Export** JSON complet, schéma `pow-equix-wasm/banc` version 3 (fiche
+  machine et garde-fou ; la version 2 reste lisible), décrit par les types de
+  `demo/banc/schema.ts`. `bun scripts/agreger-banc.ts fichiers.json…
+  [--attaque materiels.json] [--json]` en réunit plusieurs et produit un
+  tableau des appareils (processeur, fréquence, cœurs, RAM, GPU, système,
+  limites de fils), des appareils nommés comme les lignes du tableau
+  (« modèle {processeur, RAM, GPU} »), et les lignes du tableau : débit maximal par appareil (et latence à
   part), écart d’usage (meilleur appareil ÷ plus faible), écarts d’attaque
   pour chaque matériel du fichier `--attaque` (format
   `pow-equix-wasm/banc-attaque`, débits extrapolés à 10 000 € et 1 000 000 €),
