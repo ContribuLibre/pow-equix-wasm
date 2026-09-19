@@ -130,6 +130,84 @@ describe('résolution et vérification', () => {
   })
 })
 
+describe('chargement paresseux du moteur JavaScript', () => {
+  test('le chargeur construit n’importe jamais statiquement le moteur JavaScript ni le module en base64', () => {
+    const chargeur = readFileSync(resolve(import.meta.dir, '../dist/index.js'), 'utf8')
+    expect(chargeur).not.toMatch(/\bimport\s*[\s{*'"(]/)
+    expect(chargeur).not.toMatch(/equix-js|octets\.js/)
+    // Ni le corps traduit par wasm2js, ni le module en base64.
+    expect(chargeur).not.toContain('retasmFunc')
+    expect(chargeur).not.toContain('BASE64')
+    expect(chargeur.length).toBeLessThan(60_000)
+  })
+
+  test('WebAssembly fonctionne : le chargeur n’est jamais appelé', async () => {
+    let appels = 0
+    const chargerJs = async () => { appels++; return { creerExportsEquixJs } }
+    for (const fils of [0, 2]) {
+      const resultat = await resoudre({ octets, chargerJs, graine, effort: 1, nombre: 2, fils })
+      expect(resultat.moteur).toBe('wasm')
+      expect(resultat.repli).toBeNull()
+    }
+    expect((await ModuleEquix.charger({ octets, chargerJs })).moteur).toBe('wasm')
+    expect(appels).toBe(0)
+  }, 60_000)
+
+  test('WebAssembly absent : le chargeur est appelé et la preuve se vérifie', async () => {
+    let appels = 0
+    const chargerJs = async () => { appels++; return creerExportsEquixJs }
+    const original = globalThis.WebAssembly
+    let resultat
+    let module
+    try {
+      Object.defineProperty(globalThis, 'WebAssembly', { value: undefined, configurable: true, writable: true })
+      expect(webAssemblyDisponible()).toBe(false)
+      resultat = await resoudre({ octets, chargerJs, graine, effort: 1, nombre: 1, fils: 0 })
+      module = await ModuleEquix.charger({ octets, chargerJs })
+    } finally {
+      Object.defineProperty(globalThis, 'WebAssembly', { value: original, configurable: true, writable: true })
+    }
+    expect(appels).toBe(2)
+    expect(resultat.moteur).toBe('js')
+    expect(resultat.repli).toEqual({ raison: 'indisponible' })
+    expect(module.moteur).toBe('js')
+    expect((await ModuleEquix.instancier(octets)).verifier(graine, resultat.parts, 1, 1)).toBe(true)
+  }, 60_000)
+
+  test('WebAssembly en échec (module refusé) : le chargeur prend le relais, sur le fil courant comme depuis les Web Workers', async () => {
+    // Des octets que WebAssembly refuse de compiler, comme sous une politique sans 'wasm-unsafe-eval'.
+    const refuses = new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, 0xff])
+    let appels = 0
+    const chargerJs = async () => { appels++; return { creerExportsEquixJs } }
+    const valide = await ModuleEquix.instancier(octets)
+    for (const fils of [0, 1]) {
+      const vues: Array<string | undefined> = []
+      const resultat = await resoudre({ octets: refuses, chargerJs, graine, effort: 1, nombre: 1, fils, onProgression: ({ repli }) => vues.push(repli?.raison) })
+      expect(resultat.moteur).toBe('js')
+      expect(resultat.repli?.raison).toBe('echec')
+      expect(resultat.repli?.message).toBeTruthy()
+      expect(vues.every((raison) => raison === 'echec')).toBe(true)
+      expect(valide.verifier(graine, resultat.parts, 1, 1)).toBe(true)
+    }
+    expect(appels).toBe(2)
+    // Sans moteur de repli, ou en WebAssembly imposé, l’échec remonte tel quel.
+    await expect(resoudre({ octets: refuses, graine, effort: 1, nombre: 1, fils: 0 })).rejects.toThrow()
+    await expect(resoudre({ octets: refuses, chargerJs, moteur: 'wasm', graine, effort: 1, nombre: 1, fils: 0 })).rejects.toThrow()
+    expect(appels).toBe(2)
+  }, 120_000)
+
+  test('une annulation ne déclenche jamais le repli', async () => {
+    let appels = 0
+    const chargerJs = async () => { appels++; return creerExportsEquixJs }
+    for (const fils of [0, 2]) {
+      const annulation = new AbortController()
+      const calcul = resoudre({ octets, chargerJs, graine, effort: 2 ** 30, nombre: 1, fils, signal: annulation.signal, onProgression: ({ essais }) => { if (essais >= 2) annulation.abort() } })
+      await expect(calcul).rejects.toMatchObject({ name: 'AbortError' })
+    }
+    expect(appels).toBe(0)
+  }, 60_000)
+})
+
 describe('forme compacte des preuves', () => {
   const solution = new Uint8Array(16).fill(0xab)
   const listes = [[0], [0, 1, 2], [127, 128, 16_383, 16_384], [2 ** 21 - 1, 2 ** 21, 2 ** 28, 0xffff_fffe, 0xffff_ffff], [0xffff_ffff]]

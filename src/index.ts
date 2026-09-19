@@ -159,6 +159,37 @@ export interface ExportsEquix {
 export type CreateurEquixJs = () => ExportsEquix
 
 /**
+ * Chargeur paresseux du moteur JavaScript, typiquement `() => import('pow-equix-wasm/js')` :
+ * appelé seulement si WebAssembly est indisponible ou échoue.
+ */
+export type ChargeurEquixJs = () => Promise<CreateurEquixJs | { creerExportsEquixJs: CreateurEquixJs }>
+
+/** Pourquoi le moteur JavaScript a pris le relais de WebAssembly. */
+export interface Repli {
+  /** `indisponible` : WebAssembly absent ou désactivé ; `echec` : son usage a échoué. */
+  raison: 'indisponible' | 'echec'
+  /** Message de l’erreur WebAssembly, en cas d’échec. */
+  message?: string
+}
+
+/** Sources de moteur : octets de equix.wasm, fabrique JavaScript déjà chargée, ou chargeur paresseux. */
+export interface SourcesEquix {
+  octets?: Uint8Array
+  js?: CreateurEquixJs
+  chargerJs?: ChargeurEquixJs
+}
+
+/** Fabrique JavaScript : celle fournie, sinon celle du chargeur (appelé à ce moment seulement). */
+async function moteurJs(sources: SourcesEquix): Promise<CreateurEquixJs> {
+  if (sources.js) return sources.js
+  if (!sources.chargerJs) throw new Error('Aucun moteur JavaScript fourni (js ou chargerJs).')
+  const charge = await sources.chargerJs()
+  const creer = typeof charge === 'function' ? charge : charge?.creerExportsEquixJs
+  if (typeof creer !== 'function') throw new Error('Le chargeur du moteur JavaScript n’a pas donné creerExportsEquixJs.')
+  return creer
+}
+
+/**
  * Reconnaît un ArrayBuffer d’un autre contexte JavaScript aussi (iframe, jsdom,
  * worker) : `instanceof` ne compare qu’avec le constructeur du contexte courant.
  */
@@ -232,6 +263,22 @@ export class ModuleEquix {
   /** Moteur JavaScript, depuis `creerExportsEquixJs` de `pow-equix-wasm/js`. */
   static depuisJs(creer: CreateurEquixJs): ModuleEquix {
     return new ModuleEquix(controler(creer()), 'js')
+  }
+
+  /**
+   * Module WebAssembly si possible, sinon le moteur JavaScript, chargé seulement
+   * à ce moment-là (WebAssembly indisponible, ou instanciation refusée). Pour
+   * vérifier côté client sans télécharger le repli inutilement.
+   */
+  static async charger(sources: SourcesEquix): Promise<ModuleEquix> {
+    if (sources.octets && webAssemblyDisponible()) {
+      try {
+        return await ModuleEquix.instancier(sources.octets)
+      } catch (erreur) {
+        if (!sources.js && !sources.chargerJs) throw erreur
+      }
+    }
+    return ModuleEquix.depuisJs(await moteurJs(sources))
   }
 
   /** Mémoire linéaire actuellement réservée par le module, en octets. */
@@ -428,9 +475,11 @@ export interface Progression {
   moteur: Moteur
   /** Programmes HashX compilés en WebAssembly (sinon interprétés). */
   compilation: boolean
+  /** Raison pour laquelle le moteur JavaScript a pris le relais, ou null. */
+  repli: Repli | null
   /** Paramètre de mémoire de la preuve. */
   n: number
-  /** Essais cumulés, tous fils confondus. */
+  /** Essais cumulés, tous fils confondus (depuis le début du moteur en cours). */
   essais: number
   /** Parts trouvées, au plus `nombre`. */
   parts: number
@@ -453,11 +502,20 @@ export interface OptionsResolution {
   n?: number
   /** Octets de equix.wasm, pour le moteur WebAssembly. */
   octets?: Uint8Array
-  /** `creerExportsEquixJs` de `pow-equix-wasm/js`, pour le moteur JavaScript. */
+  /** `creerExportsEquixJs` de `pow-equix-wasm/js`, déjà chargé, pour le moteur JavaScript. */
   js?: CreateurEquixJs
   /**
-   * `auto` (par défaut) : WebAssembly s’il est disponible et fourni, sinon
-   * JavaScript s’il est fourni. `wasm` ou `js` imposent le moteur.
+   * Chargeur du moteur JavaScript (≈ 620 Ko), typiquement
+   * `() => import('pow-equix-wasm/js')` : appelé seulement si WebAssembly est
+   * indisponible, ou si son usage échoue (compilation ou instanciation
+   * refusées, mémoire insuffisante, Web Worker en échec). Une annulation ne
+   * déclenche jamais le repli.
+   */
+  chargerJs?: ChargeurEquixJs
+  /**
+   * `auto` (par défaut) : WebAssembly s’il est disponible et fourni, et
+   * JavaScript (`js` ou `chargerJs`) s’il est indisponible ou échoue.
+   * `wasm` ou `js` imposent le moteur, sans repli.
    */
   moteur?: Moteur | 'auto'
   /**
@@ -485,6 +543,8 @@ export interface Resolution {
   moteur: Moteur
   /** Programmes HashX compilés en WebAssembly pendant tout le calcul. */
   compilation: boolean
+  /** Raison pour laquelle le moteur JavaScript a pris le relais, ou null. */
+  repli: Repli | null
   n: number
   /** Nombre de fils effectivement utilisés ; 0 pour le fil courant. */
   fils: number
@@ -494,16 +554,21 @@ export interface Resolution {
 }
 
 /** Moteur que `resoudre` retiendra avec ces options, ou null s’il n’en a aucun. */
-export function moteurRetenu(options: Pick<OptionsResolution, 'octets' | 'js' | 'moteur'>): Moteur | null {
+/**
+ * Moteur que `resoudre` essaiera d’abord avec ces options, ou null s’il n’en a
+ * aucun (en `auto`, JavaScript peut encore prendre le relais si WebAssembly échoue).
+ */
+export function moteurRetenu(options: Pick<OptionsResolution, 'octets' | 'js' | 'chargerJs' | 'moteur'>): Moteur | null {
   const choix = options.moteur ?? 'auto'
   const wasm = Boolean(options.octets) && webAssemblyDisponible()
+  const js = Boolean(options.js || options.chargerJs)
   if (choix === 'wasm') return wasm ? 'wasm' : null
-  if (choix === 'js') return options.js ? 'js' : null
-  return wasm ? 'wasm' : options.js ? 'js' : null
+  if (choix === 'js') return js ? 'js' : null
+  return wasm ? 'wasm' : js ? 'js' : null
 }
 
 /** Exécution prévue avec ces options : de quoi estimer la durée avant de calculer. */
-export function executionPrevue(options: Pick<OptionsResolution, 'octets' | 'js' | 'moteur' | 'compilation'>): Execution | null {
+export function executionPrevue(options: Pick<OptionsResolution, 'octets' | 'js' | 'chargerJs' | 'moteur' | 'compilation'>): Execution | null {
   const moteur = moteurRetenu(options)
   if (moteur === 'wasm') return options.compilation === 'jamais' ? 'wasm' : 'wasmCompile'
   // Sans WebAssembly, le JIT est en général coupé aussi : c’est l’hypothèse prudente.
@@ -605,41 +670,67 @@ function restantEstime(essais: number, parts: number, nombre: number, effort: nu
 
 class ErreurTravailleur extends Error {}
 
+function estAnnulation(erreur: unknown, signal?: AbortSignal): boolean {
+  return Boolean(signal?.aborted) || (erreur instanceof Error && erreur.name === 'AbortError')
+}
+
 /**
  * Résout une preuve dans des Web Workers, un compteur sur `fils` chacun. Sans
  * Web Worker disponible ou autorisé, le calcul se fait sur le fil courant,
- * essai par essai, en rendant la main entre deux essais.
+ * essai par essai, en rendant la main entre deux essais. En `auto`,
+ * WebAssembly est tenté d’abord ; le moteur JavaScript n’est chargé que s’il
+ * est indisponible ou échoue, et le calcul reprend alors avec lui.
  */
 export async function resoudre(options: OptionsResolution): Promise<Resolution> {
   const { graine, effort, nombre, signal } = options
   const n = options.n ?? N_EQUIX
   if (!graineValide(graine) || !effortValide(effort) || !nombreValide(nombre) || !nValide(n)) throw new Error('Paramètres de preuve invalides.')
   if (options.compilation !== undefined && options.compilation !== 'auto' && options.compilation !== 'jamais') throw new Error('Option de compilation invalide.')
+  const choix = options.moteur ?? 'auto'
   const moteur = moteurRetenu(options)
   if (!moteur) {
-    throw new Error(options.moteur === 'wasm' || (!options.js && options.octets)
+    throw new Error(choix === 'wasm' || (!options.js && !options.chargerJs && options.octets)
       ? 'WebAssembly est indisponible ici et aucun moteur JavaScript n’a été fourni.'
-      : 'Aucun moteur Equi-X fourni : il faut les octets de equix.wasm ou creerExportsEquixJs.')
+      : 'Aucun moteur Equi-X fourni : il faut les octets de equix.wasm, creerExportsEquixJs ou chargerJs.')
   }
   signal?.throwIfAborted()
+  const jsFourni = Boolean(options.js || options.chargerJs)
+  if (moteur === 'wasm') {
+    try {
+      return await resoudreAvec(options, 'wasm', undefined, null, n)
+    } catch (erreur) {
+      if (estAnnulation(erreur, signal) || choix === 'wasm' || !jsFourni) throw erreur
+      const repli: Repli = { raison: 'echec', message: erreur instanceof Error ? erreur.message : String(erreur) }
+      return resoudreAvec(options, 'js', await moteurJs(options), repli, n)
+    }
+  }
+  const repli: Repli | null = choix === 'auto' && !webAssemblyDisponible() ? { raison: 'indisponible' } : null
+  const js = await moteurJs(options)
+  signal?.throwIfAborted()
+  return resoudreAvec(options, 'js', js, repli, n)
+}
+
+async function resoudreAvec(options: OptionsResolution, moteur: Moteur, js: CreateurEquixJs | undefined, repli: Repli | null, n: number): Promise<Resolution> {
+  const { effort, nombre, signal } = options
   const fils = options.fils === undefined ? filsConseilles(effort, nombre) : Math.max(0, Math.floor(options.fils))
   const disponible = typeof Worker === 'function' && typeof Blob === 'function' && typeof URL.createObjectURL === 'function'
   const creer = options.creerTravailleur ?? (disponible ? travailleurParDefaut : undefined)
   const compiler = moteur === 'wasm' && options.compilation !== 'jamais'
   if (fils > 0 && creer) {
     try {
-      return await resoudreEnParallele(options, moteur, creer, fils, n, compiler)
+      return await resoudreEnParallele(options, moteur, js, repli, creer, fils, n, compiler)
     } catch (erreur) {
       if (signal?.aborted || !(erreur instanceof ErreurTravailleur)) throw erreur
       // Un navigateur peut refuser les Web Workers (file://, politique de sécurité) : repli local.
+      // Si c’est WebAssembly qui échoue, le fil courant échouera aussi, et `resoudre` passera au JavaScript.
     }
   }
-  return resoudreSurCeFil(options, moteur, n, compiler)
+  return resoudreSurCeFil(options, moteur, js, repli, n, compiler)
 }
 
-async function resoudreSurCeFil(options: OptionsResolution, moteur: Moteur, n: number, compiler: boolean): Promise<Resolution> {
+async function resoudreSurCeFil(options: OptionsResolution, moteur: Moteur, js: CreateurEquixJs | undefined, repli: Repli | null, n: number, compiler: boolean): Promise<Resolution> {
   const { graine, effort, nombre, signal, onProgression } = options
-  const module = moteur === 'wasm' ? await ModuleEquix.instancier(options.octets!) : ModuleEquix.depuisJs(options.js!)
+  const module = moteur === 'wasm' ? await ModuleEquix.instancier(options.octets!) : ModuleEquix.depuisJs(js!)
   const trouvees = new Map<number, Uint8Array>()
   const debut = performance.now()
   let essais = 0
@@ -652,14 +743,14 @@ async function resoudreSurCeFil(options: OptionsResolution, moteur: Moteur, n: n
     essais++
     if (solution) trouvees.set(compteur, solution)
     const dureeMs = performance.now() - debut
-    onProgression?.({ moteur, compilation, n, essais, parts: trouvees.size, dureeMs, restantEstimeMs: restantEstime(essais, trouvees.size, nombre, effort, dureeMs), memoireOctets: module.memoireOctets })
+    onProgression?.({ moteur, compilation, repli, n, essais, parts: trouvees.size, dureeMs, restantEstimeMs: restantEstime(essais, trouvees.size, nombre, effort, dureeMs), memoireOctets: module.memoireOctets })
     if (trouvees.size < nombre) await new Promise<void>((resolve) => setTimeout(resolve, 0))
   }
   signal?.throwIfAborted()
-  return { parts: assembler(trouvees, nombre), essais, moteur, compilation: toujoursCompile, n, fils: 0, dureeMs: performance.now() - debut, memoireOctets: module.memoireOctets }
+  return { parts: assembler(trouvees, nombre), essais, moteur, compilation: toujoursCompile, repli, n, fils: 0, dureeMs: performance.now() - debut, memoireOctets: module.memoireOctets }
 }
 
-function resoudreEnParallele(options: OptionsResolution, moteur: Moteur, creer: NonNullable<OptionsResolution['creerTravailleur']>, fils: number, n: number, compiler: boolean): Promise<Resolution> {
+function resoudreEnParallele(options: OptionsResolution, moteur: Moteur, js: CreateurEquixJs | undefined, repli: Repli | null, creer: NonNullable<OptionsResolution['creerTravailleur']>, fils: number, n: number, compiler: boolean): Promise<Resolution> {
   const { graine, effort, nombre, signal, onProgression } = options
   return new Promise<Resolution>((resolve, reject) => {
     const travailleurs: Worker[] = []
@@ -688,7 +779,7 @@ function resoudreEnParallele(options: OptionsResolution, moteur: Moteur, creer: 
     signal?.addEventListener('abort', annuler, { once: true })
     try {
       for (let index = 0; index < fils; index++) {
-        const travailleur = creer(moteur, options.js)
+        const travailleur = creer(moteur, js)
         travailleurs.push(travailleur)
         travailleur.onerror = (evenement) => {
           evenement.preventDefault?.()
@@ -707,10 +798,10 @@ function resoudreEnParallele(options: OptionsResolution, moteur: Moteur, creer: 
           if (message.solution && message.compteur !== undefined) trouvees.set(message.compteur, message.solution)
           const parts = Math.min(trouvees.size, nombre)
           const dureeMs = performance.now() - debut
-          onProgression?.({ moteur, compilation, n, essais, parts, dureeMs, restantEstimeMs: restantEstime(essais, parts, nombre, effort, dureeMs), memoireOctets: memoire })
+          onProgression?.({ moteur, compilation, repli, n, essais, parts, dureeMs, restantEstimeMs: restantEstime(essais, parts, nombre, effort, dureeMs), memoireOctets: memoire })
           if (trouvees.size >= nombre) {
             terminer()
-            resolve({ parts: assembler(trouvees, nombre), essais, moteur, compilation: toujoursCompile, n, fils, dureeMs, memoireOctets: memoireMax })
+            resolve({ parts: assembler(trouvees, nombre), essais, moteur, compilation: toujoursCompile, repli, n, fils, dureeMs, memoireOctets: memoireMax })
           }
         }
         const octets = moteur === 'wasm' ? options.octets!.slice().buffer : undefined

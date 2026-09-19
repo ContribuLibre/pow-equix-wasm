@@ -295,22 +295,36 @@ const { parts } = await resoudre({ octets, graine, effort: 1, nombre: 4, n })
 `pow-equix-wasm/js` fournit le même module traduit en JavaScript pur par wasm2js
 (binaryen) : mêmes preuves, octet pour octet, pour tous les n, mais bien plus
 lent (il interprète toujours HashX : compiler demanderait `eval`). Il pèse
-environ 150 Ko une fois minifié (37 Ko compressé), et n’a à être chargé que
-s’il sert :
+≈ 620 Ko bruts, ≈ 150 Ko minifié (37 Ko compressé) : il ne doit être
+téléchargé que s’il sert. Façon recommandée : le confier à `resoudre` par
+`chargerJs`, un chargeur que le paquet n’appelle que si WebAssembly est
+indisponible **ou échoue** (compilation ou instanciation refusées, par exemple
+par une politique sans `'wasm-unsafe-eval'`, mémoire insuffisante, Web Worker
+en échec avant tout résultat). Le calcul reprend alors avec le moteur
+JavaScript ; une annulation, elle, ne déclenche jamais le repli.
 
 ```ts
 import { estimerDuree, ralentissement, resoudre, webAssemblyDisponible } from 'pow-equix-wasm'
 
-const wasm = webAssemblyDisponible()
-const js = wasm ? undefined : (await import('pow-equix-wasm/js')).creerExportsEquixJs
-if (!wasm) {
+if (!webAssemblyDisponible()) {
   // Sans WebAssembly, le JIT est en général coupé aussi : hypothèse prudente.
   const attente = estimerDuree({ effort: 1, nombre: 4, execution: 'jsSansJit' })
   if (attente > 5_000) avertir(`Active WebAssembly pour valider environ ${Math.round(ralentissement('jsSansJit'))} fois plus vite.`)
 }
-const resultat = await resoudre({ octets, js, graine, effort: 1, nombre: 4, onProgression })
-// resultat.moteur vaut 'js' en mode dégradé.
+const resultat = await resoudre({
+  octets, graine, effort: 1, nombre: 4, onProgression,
+  chargerJs: () => import('pow-equix-wasm/js'),  // téléchargé seulement en cas de besoin
+})
+// resultat.moteur vaut 'js' en mode dégradé, et resultat.repli en dit la raison :
+// { raison: 'indisponible' } ou { raison: 'echec', message } (aussi dans la progression).
 ```
+
+Le bundle principal (`dist/index.js`) n’importe jamais statiquement le moteur
+JavaScript ni le module en base64 (un test le vérifie) : c’est le `import()`
+dynamique de `chargerJs` qui en fait un morceau à part pour le bundler. Qui
+l’importe déjà lui-même peut passer la fabrique par `js: creerExportsEquixJs`.
+Côté client, `ModuleEquix.charger({ octets, chargerJs })` donne de même un
+module pour vérifier, WebAssembly d’abord.
 
 `moteur: 'wasm' | 'js' | 'auto'` impose ou laisse choisir le moteur ;
 `moteurRetenu` dit à l’avance lequel servira. `ModuleEquix.instancier(octets)`

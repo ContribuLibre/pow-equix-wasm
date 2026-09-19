@@ -97,7 +97,7 @@ function taillePrevue(choix: Reglages, essais: number): number {
 
 /** Exécution que le calcul emploiera, avec les deux moteurs fournis. */
 function executionChoisie(choix: Reglages): Execution | null {
-  return executionPrevue({ octets: new Uint8Array(1), js: () => { throw new Error('non chargé') }, moteur: choix.moteur, compilation: choix.compilation })
+  return executionPrevue({ octets: new Uint8Array(1), chargerJs: () => Promise.reject(new Error('non chargé')), moteur: choix.moteur, compilation: choix.compilation })
 }
 
 let tempsParEssaiMesure: number | undefined
@@ -133,7 +133,10 @@ const octetsWasm = fetch('./equix.wasm').then(async (reponse) => {
   if (!reponse.ok) throw new Error(`Module indisponible (${reponse.status})`)
   return new Uint8Array(await reponse.arrayBuffer())
 })
-/** Le moteur JavaScript pèse ~500 Ko : il n’est chargé que s’il sert. */
+/**
+ * Le moteur JavaScript pèse ≈ 620 Ko : `resoudre` ne l’appelle que si
+ * WebAssembly est indisponible ou échoue (le chargement est mémorisé).
+ */
 let moteurJs: Promise<CreateurEquixJs> | undefined
 const chargerJs = (): Promise<CreateurEquixJs> => (moteurJs ??= import('../dist/equix-js.js').then((module) => module.creerExportsEquixJs))
 
@@ -154,9 +157,7 @@ formulaire.addEventListener('submit', async (evenement) => {
   let verification: Verification | undefined
   afficher(choix, mesures, verification)
   try {
-    const execution = executionChoisie(choix)
-    const octets = execution?.startsWith('wasm') || choix.moteur === 'auto' ? await octetsWasm.catch(() => undefined) : undefined
-    const js = execution === 'js' || execution === 'jsSansJit' ? await chargerJs() : undefined
+    const octets = choix.moteur === 'js' ? undefined : await octetsWasm.catch(() => undefined)
     for (let repetition = 1; repetition <= choix.repetitions; repetition++) {
       // Une graine différente à chaque répétition : chaque preuve est indépendante.
       const graine = await construireGraine('pow-equix-wasm/demo', `${Date.now()}-${repetition}-${Math.random()}`)
@@ -165,12 +166,13 @@ formulaire.addEventListener('submit', async (evenement) => {
       barre.value = 0
       let memoire = 0
       const resultat = await resoudre({
-        octets, js, moteur: choix.moteur, compilation: choix.compilation, n: choix.n, graine, effort: choix.effort, nombre: choix.nombre, fils: choix.fils, signal: calcul.signal,
+        octets, chargerJs, moteur: choix.moteur, compilation: choix.compilation, n: choix.n, graine, effort: choix.effort, nombre: choix.nombre, fils: choix.fils, signal: calcul.signal,
         onProgression: (progression) => {
           memoire = Math.max(memoire, progression.memoireOctets)
           barre.value = progression.parts
           remplir(element('direct'), [
             ['Moteur', progression.moteur === 'wasm' ? `WebAssembly, programmes ${progression.compilation ? 'compilés' : 'interprétés'}` : 'JavaScript'],
+            ...(progression.repli ? [['Repli', progression.repli.raison === 'indisponible' ? 'WebAssembly indisponible' : `WebAssembly en échec : ${progression.repli.message ?? ''}`] as [string, string]] : []),
             ['Paramètre', `n = ${progression.n}`],
             ['Parts trouvées', `${progression.parts} / ${choix.nombre}`],
             ['Essais', String(progression.essais)],
@@ -184,7 +186,7 @@ formulaire.addEventListener('submit', async (evenement) => {
       // Dès la première preuve : pause pour mesurer la vérification, puis la suite.
       if (!verification) {
         etat.textContent = 'Mesure de la vérification…'
-        verification = mesurerVerification(resultat.moteur === 'wasm' ? await ModuleEquix.instancier(octets!) : ModuleEquix.depuisJs(js!), graine, resultat.parts, choix)
+        verification = mesurerVerification(resultat.moteur === 'wasm' ? await ModuleEquix.instancier(octets!) : ModuleEquix.depuisJs(await chargerJs()), graine, resultat.parts, choix)
       }
       afficher(choix, mesures, verification)
     }
