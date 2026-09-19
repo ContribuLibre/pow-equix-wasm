@@ -30,3 +30,7 @@ table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nu
 th, td { padding: .4rem .6rem; border-bottom: 1px solid var(--bord); text-align: end; }
 th:first-child, td:first-child { text-align: start; }
 .discret { margin: -.4rem 0 .8rem; color: var(--discret); }
+.fichiers { align-items: center; color: var(--discret); }
+.message { grid-column: 1 / -1; margin: 0; min-height: 1.5em; }
+.message.erreur { color: var(--alerte); font-weight: 600; }
+.choix-langue { display: flex; gap: 1rem; font-size: 1.2rem; }

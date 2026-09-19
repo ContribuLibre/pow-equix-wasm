@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="{{langue}}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{titre}}</title>
+  <meta name="description" content="{{description}}">
+  <link rel="alternate" hreflang="{{autreCode}}" href="../{{autreCode}}/">
+  <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+  <main>
+    <header>
+      <h1>{{titreCourt}}</h1>
+      <p>{{intro}}</p>
+      <p class="liens"><a href="https://github.com/ContribuLibre/pow-equix-wasm">{{codeSource}}</a> · <a href="https://www.npmjs.com/package/pow-equix-wasm">{{paquetNpm}}</a> · <a id="autre-langue" href="../{{autreCode}}/" hreflang="{{autreCode}}" lang="{{autreCode}}" title="{{autreLangueTitre}}">{{autreLangue}}</a></p>
+    </header>
+
+    <section aria-labelledby="titre-appareil">
+      <h2 id="titre-appareil">{{appareil}}</h2>
+      <dl id="appareil" class="grille"></dl>
+      <p id="alerte-wasm" class="alerte" hidden>{{alerteWasm}}</p>
+    </section>
+
+    <section aria-labelledby="titre-reglages">
+      <h2 id="titre-reglages">{{reglages}}</h2>
+      <form id="reglages">
+        <label>{{effort}}
+          <input name="effort" type="number" min="1" max="4294967295" step="1" value="1" required>
+          <small>{{effortAide}}</small>
+        </label>
+        <label>{{nombre}}
+          <input name="nombre" type="number" min="1" max="64" step="1" value="4" required>
+          <small>{{nombreAide}}</small>
+        </label>
+        <label>{{memoire}}
+          <select name="n">
+            <option value="60">{{n60}}</option>
+            <option value="64">{{n64}}</option>
+            <option value="68">{{n68}}</option>
+            <option value="72">{{n72}}</option>
+            <option value="76">{{n76}}</option>
+            <option value="80">{{n80}}</option>
+          </select>
+          <small>{{memoireAide}}</small>
+        </label>
+        <label>{{programmes}}
+          <select name="compilation">
+            <option value="auto">{{programmesAuto}}</option>
+            <option value="jamais">{{programmesJamais}}</option>
+          </select>
+          <small>{{programmesAide}}</small>
+        </label>
+        <label>{{repartition}}
+          <select name="repartition">
+            <option value="fixe">{{repartitionFixe}}</option>
+            <option value="adaptatif">{{repartitionAdaptatif}}</option>
+          </select>
+          <small>{{repartitionAide}}</small>
+        </label>
+        <label>{{fils}}
+          <input name="fils" type="number" min="0" max="64" step="1" required>
+          <small>{{filsAide}}</small>
+        </label>
+        <label>{{moteur}}
+          <select name="moteur">
+            <option value="auto">{{moteurAuto}}</option>
+            <option value="wasm">{{moteurWasm}}</option>
+            <option value="js">{{moteurJs}}</option>
+          </select>
+          <small>{{moteurAide}}</small>
+        </label>
+        <label>{{repetitions}}
+          <input name="repetitions" type="number" min="1" max="200" step="1" value="5" required>
+          <small>{{repetitionsAide}}</small>
+        </label>
+        <label>{{verifications}}
+          <input name="verifications" type="number" min="1" max="100000" step="1" value="500" required>
+          <small>{{verificationsAide}}</small>
+        </label>
+        <div class="actions">
+          <button id="lancer" type="submit">{{lancer}}</button>
+          <button id="annuler" type="button" hidden>{{annuler}}</button>
+        </div>
+        <div class="actions fichiers">
+          <span>{{fichierReglages}}</span>
+          <button id="exporter-reglages" type="button">{{exporterReglages}}</button>
+          <button id="importer-reglages" type="button">{{importerReglages}}</button>
+          <input id="fichier-reglages" type="file" accept="application/json,.json" hidden>
+        </div>
+        <p id="message-reglages" class="message" role="status" aria-live="polite"></p>
+      </form>
+    </section>
+
+    <section aria-labelledby="titre-previsions">
+      <h2 id="titre-previsions">{{previsions}}</h2>
+      <p class="discret">{{previsionsAide}}</p>
+      <dl id="previsions" class="grille"></dl>
+    </section>
+
+    <section aria-labelledby="titre-progression" id="bloc-progression" hidden>
+      <h2 id="titre-progression">{{progression}}</h2>
+      <p id="etat" role="status" aria-live="polite"></p>
+      <progress id="barre" max="1" value="0"></progress>
+      <dl id="direct" class="grille"></dl>
+    </section>
+
+    <section aria-labelledby="titre-resultats" id="bloc-resultats" hidden>
+      <h2 id="titre-resultats">{{resultats}}</h2>
+      <p class="discret">{{resultatsAide}}</p>
+      <h3>{{calcul}}</h3>
+      <dl id="synthese" class="grille"></dl>
+      <div class="defilement">
+        <table>
+          <thead><tr><th scope="col">{{colRang}}</th><th scope="col">{{colMoteur}}</th><th scope="col">{{colN}}</th><th scope="col">{{colDuree}}</th><th scope="col">{{colEssais}}</th><th scope="col">{{colEssaisParSeconde}}</th><th scope="col">{{colMemoire}}</th></tr></thead>
+          <tbody id="lignes"></tbody>
+        </table>
+      </div>
+      <p id="note-jit" class="discret" hidden></p>
+      <h3>{{verification}}</h3>
+      <dl id="verification" class="grille"></dl>
+      <h3>{{exporter}}</h3>
+      <p>{{exporterAide}}</p>
+      <textarea id="export" rows="8" readonly></textarea>
+      <div class="actions"><button id="copier" type="button">{{copier}}</button> <button id="telecharger" type="button">{{telecharger}}</button></div>
+    </section>
+  </main>
+  <script type="module" src="../demo.js"></script>
+</body>
+</html>
