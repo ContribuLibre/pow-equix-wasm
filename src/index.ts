@@ -43,10 +43,18 @@ export interface ExportsEquix {
 /** Fabrique du moteur JavaScript : `creerExportsEquixJs` de `pow-equix-wasm/js`. */
 export type CreateurEquixJs = () => ExportsEquix
 
+/**
+ * Reconnaît un ArrayBuffer d’un autre contexte JavaScript aussi (iframe, jsdom,
+ * worker) : `instanceof` ne compare qu’avec le constructeur du contexte courant.
+ */
+function estArrayBuffer(valeur: unknown): valeur is ArrayBuffer {
+  return Object.prototype.toString.call(valeur) === '[object ArrayBuffer]'
+}
+
 function exportsValides(exports: unknown): exports is ExportsEquix {
   const candidat = exports as Record<string, unknown> | null
   return typeof candidat === 'object' && candidat !== null
-    && (candidat.memory as { buffer?: unknown } | undefined)?.buffer instanceof ArrayBuffer
+    && estArrayBuffer((candidat.memory as { buffer?: unknown } | undefined)?.buffer)
     && ['tampon_adresse', 'tampon_taille', 'graine_max', 'version_format', 'verifier', 'essayer'].every((nom) => typeof candidat[nom] === 'function')
 }
 

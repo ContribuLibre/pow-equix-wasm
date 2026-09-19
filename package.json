@@ -1,6 +1,6 @@
 {
   "name": "pow-equix-wasm",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Preuve de travail Equi-X (Tor/Arti) en WebAssembly, avec repli en JavaScript pur : un seul module qui résout dans le navigateur et vérifie côté serveur",
   "keywords": [
     "proof-of-work",

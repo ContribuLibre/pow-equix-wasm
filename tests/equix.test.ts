@@ -28,6 +28,15 @@ describe('module publié', () => {
     expect(empreinte.js.octets).toBe(js.length)
   })
 
+  test('accepte un module dont la mémoire vient d’un autre contexte JavaScript', async () => {
+    // Comme sous jsdom ou dans une iframe : un ArrayBuffer d’un autre contexte échoue à `instanceof`.
+    const { runInNewContext } = await import('node:vm')
+    const exports = creerExportsEquixJs()
+    const etranger = { ...exports, memory: { get buffer() { return runInNewContext('new ArrayBuffer(8)') } } }
+    expect(etranger.memory.buffer instanceof ArrayBuffer).toBe(false)
+    expect(() => ModuleEquix.depuisJs(() => etranger)).not.toThrow()
+  })
+
   test('refuse un module qui n’est pas celui d’Equi-X', async () => {
     await expect(ModuleEquix.instancier(new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0]))).rejects.toThrow('Module Equi-X invalide.')
   })
