@@ -8,7 +8,7 @@ import { resolve } from 'node:path'
 import {
   ECART_MAX, GRAINE_MAX, ModuleEquix, N_VALIDES, REFERENCE_MS_PAR_ESSAI, VERSION_FORMAT, construireGraine, depuisHexadecimal, encoderPreuve, essaisAttendus, estimerDuree,
   executionPrevue, genererModuleHashx, hexadecimal, memoirePourN, moteurRetenu, msParEssai, nPourMemoire, probabiliteEssai, ralentissement, resoudre,
-  tailleMaxPreuve, taillePreuve, tailleSolution, webAssemblyDisponible,
+  SEUILS_FILS_ADAPTATIFS, type EtatFils, filsAdaptatifs, tailleMaxPreuve, taillePreuve, tailleSolution, travailleurEquix, webAssemblyDisponible,
 } from '../dist/index.js'
 import { creerExportsEquixJs } from '../dist/equix-js.js'
 import { SHA256_EQUIX, octetsEquix } from '../dist/octets.js'
@@ -451,5 +451,145 @@ describe('moteur JavaScript (sans WebAssembly)', () => {
     expect(vues[0]!.restantEstimeMs).not.toBeNull()
     expect(vues.at(-1)!.restantEstimeMs).toBe(0)
     expect(vues.at(-1)!.dureeMs).toBeGreaterThan(0)
+  }, 60_000)
+})
+
+/** Enveloppe un Web Worker pour noter les compteurs distribués et les essais rapportés. */
+function espion(travailleur: Worker, distribues: number[], rapportes: number[]): Worker {
+  const enveloppe = {
+    postMessage(message: { compteur: number }) {
+      distribues.push(message.compteur)
+      travailleur.postMessage(message)
+    },
+    terminate: () => travailleur.terminate(),
+    set onmessage(ecouteur: (evenement: MessageEvent) => void) {
+      travailleur.onmessage = (evenement) => {
+        if ((evenement.data as { type: string }).type === 'essai') rapportes.push((evenement.data as { compteur: number }).compteur)
+        ecouteur(evenement)
+      }
+    },
+    set onerror(ecouteur: (evenement: ErrorEvent) => void) {
+      travailleur.onerror = ecouteur
+    },
+  }
+  return enveloppe as unknown as Worker
+}
+
+/** Un Web Worker qui échoue dès son premier compteur, comme faute de mémoire. */
+function travailleurDefaillant(): Worker {
+  const faux: { onmessage: ((evenement: MessageEvent) => void) | null; onerror: unknown; postMessage(): void; terminate(): void } = {
+    onmessage: null,
+    onerror: null,
+    postMessage() {
+      setTimeout(() => faux.onmessage?.({ data: { type: 'erreur', message: 'Mémoire insuffisante.' } } as MessageEvent), 5)
+    },
+    terminate() {},
+  }
+  return faux as unknown as Worker
+}
+
+const etat = (partiel: Partial<EtatFils>): EtatFils => ({ essaisTermines: 1, dureePremierEssaiMs: 40, dureeMoyenneEssaiMs: 35, filsActifs: 1, n: 60, execution: 'wasmCompile', ...partiel })
+
+describe('fils adaptatifs', () => {
+  test('les fils montent de 1 à 4 en cours de calcul, sans trou ni doublon de compteur, et la preuve est valide', async () => {
+    const distribues: number[] = []
+    const rapportes: number[] = []
+    const vus: number[] = []
+    const politique = ({ essaisTermines }: EtatFils): number => (essaisTermines >= 2 ? 4 : essaisTermines >= 1 ? 2 : 1)
+    const resultat = await resoudre({
+      octets, graine, effort: 8, nombre: 3, fils: politique,
+      creerTravailleur: (moteur, js) => espion(travailleurEquix(moteur, js), distribues, rapportes),
+      onProgression: ({ filsActifs }) => vus.push(filsActifs),
+    })
+    // Un fil au départ ; la politique en demande 2 dès le premier essai, avant son rapport.
+    expect(vus[0]).toBe(2)
+    expect(vus.every((fils, index) => index === 0 || fils >= vus[index - 1]!)).toBe(true)
+    expect(resultat.fils).toBe(4)
+    // Chaque compteur distribué une seule fois, sans trou : 0, 1, 2… ; aucun essai rapporté deux fois.
+    expect([...distribues].sort((a, b) => a - b)).toEqual(distribues.map((_, index) => index))
+    expect(new Set(rapportes).size).toBe(rapportes.length)
+    expect(rapportes.length).toBe(resultat.essais)
+    const module = await ModuleEquix.instancier(octets)
+    expect(module.verifier(graine, resultat.parts, 8, 3)).toBe(true)
+    expect(module.compteurs(resultat.parts, 3)!.every((compteur) => rapportes.includes(compteur))).toBe(true)
+  }, 120_000)
+
+  test('l’échec de création d’un fil supplémentaire est toléré, et aucun autre n’est tenté', async () => {
+    for (const echec of ['exception', 'erreur avant tout résultat'] as const) {
+      let creations = 0
+      const rapportes: number[] = []
+      const resultat = await resoudre({
+        // 4 fils d’emblée, puis 8 : sans l’arrêt de la montée, d’autres fils seraient créés.
+        octets, graine, effort: 4, nombre: 2, fils: ({ essaisTermines }) => (essaisTermines ? 8 : 4),
+        creerTravailleur: (moteur, js) => {
+          creations++
+          if (creations === 1) return espion(travailleurEquix(moteur, js), [], rapportes)
+          if (echec === 'exception') throw new RangeError('Mémoire insuffisante.')
+          return travailleurDefaillant()
+        },
+      })
+      // Une exception à la création arrête aussitôt la montée ; un Web Worker qui
+      // échoue plus tard (ici 5 ms) n’est connu qu’après la première salve, jusqu’à 4.
+      expect(creations).toBe(echec === 'exception' ? 2 : 4)
+      if (echec === 'exception') expect(resultat.fils).toBe(1)
+      expect(resultat.moteur).toBe('wasm')
+      // Le compteur confié au fil défaillant a été redistribué : aucun trou.
+      expect([...rapportes].sort((a, b) => a - b)).toEqual(rapportes.map((_, index) => index))
+      expect((await ModuleEquix.instancier(octets)).verifier(graine, resultat.parts, 4, 2)).toBe(true)
+    }
+  }, 120_000)
+
+  test('une annulation pendant la montée arrête tout, sans repli', async () => {
+    let appels = 0
+    const annulation = new AbortController()
+    const calcul = resoudre({
+      octets, graine, effort: 2 ** 30, nombre: 1, fils: ({ essaisTermines }) => 1 + essaisTermines, signal: annulation.signal,
+      chargerJs: async () => { appels++; return creerExportsEquixJs },
+      onProgression: ({ filsActifs }) => { if (filsActifs >= 3) annulation.abort() },
+    })
+    await expect(calcul).rejects.toMatchObject({ name: 'AbortError' })
+    expect(appels).toBe(0)
+  }, 60_000)
+
+  test('filsAdaptatifs : mémoire de l’appareil connue', () => {
+    // 1/32 de la mémoire : 4 Go → 128 Mio, soit 71 fils à n = 60 (plafonnés à 8), 2 à n = 80.
+    expect(filsAdaptatifs({ memoireAppareilGo: 4, coeurs: 8 })(etat({ essaisTermines: 0, dureeMoyenneEssaiMs: null }))).toBe(8)
+    expect(filsAdaptatifs({ memoireAppareilGo: 4, coeurs: 8 })(etat({ n: 80 }))).toBe(2)
+    expect(filsAdaptatifs({ memoireAppareilGo: 1, coeurs: 4 })(etat({}))).toBe(4)
+    expect(filsAdaptatifs({ memoireAppareilGo: 0.5, coeurs: 8 })(etat({ n: 76 }))).toBe(1)
+    expect(filsAdaptatifs({ memoireAppareilGo: 8, coeurs: 16, filsMax: 12 })(etat({}))).toBe(12)
+  })
+
+  test('filsAdaptatifs : sans mémoire connue, d’après la durée mesurée et l’écran', () => {
+    const politique = (ecranPx: number | null, coeurs = 8) => filsAdaptatifs({ memoireAppareilGo: null, ecranPx, coeurs })
+    const reference = 35 // durée de référence d’un essai compilé à n = 60
+    // Un seul fil avant toute mesure.
+    expect(politique(2560)(etat({ essaisTermines: 0, dureeMoyenneEssaiMs: null }))).toBe(1)
+    // Rapide et écran bien défini : jusqu’à 8, et pas plus que les cœurs.
+    expect(politique(2560)(etat({ dureeMoyenneEssaiMs: reference }))).toBe(8)
+    expect(politique(2560, 4)(etat({ dureeMoyenneEssaiMs: reference }))).toBe(4)
+    // Lent, ou écran peu défini (téléphone modeste) : un fil.
+    expect(politique(2560)(etat({ dureeMoyenneEssaiMs: 3 * reference }))).toBe(1)
+    expect(politique(1080)(etat({ dureeMoyenneEssaiMs: reference }))).toBe(1)
+    // Entre les deux : 4, ou 2 si r > 2 ; un écran inconnu compte comme moyen.
+    expect(politique(1600)(etat({ dureeMoyenneEssaiMs: 1.5 * reference }))).toBe(4)
+    expect(politique(1600)(etat({ dureeMoyenneEssaiMs: 2.2 * reference }))).toBe(2)
+    expect(politique(null)(etat({ dureeMoyenneEssaiMs: reference }))).toBe(4)
+    expect(politique(1600, 1)(etat({ dureeMoyenneEssaiMs: reference }))).toBe(1)
+    // La référence suit n et l’exécution : 36 × plus long à n = 80, 12 × en interprété.
+    expect(politique(2560)(etat({ n: 80, dureeMoyenneEssaiMs: 36 * reference }))).toBe(8)
+    expect(politique(2560)(etat({ execution: 'wasm', dureeMoyenneEssaiMs: 430 }))).toBe(8)
+    // Seuils surchargeables.
+    expect(SEUILS_FILS_ADAPTATIFS.rapportLent).toBe(2.5)
+    expect(filsAdaptatifs({ memoireAppareilGo: null, ecranPx: 1600, coeurs: 8, rapportLent: 5 })(etat({ dureeMoyenneEssaiMs: 3 * reference }))).toBe(2)
+    expect(filsAdaptatifs({ memoireAppareilGo: null, ecranPx: 1000, coeurs: 8, ecranPeuDefini: 900 })(etat({ dureeMoyenneEssaiMs: 1.5 * reference }))).toBe(4)
+  })
+
+  test('resoudre borne une politique aux essais restants attendus', async () => {
+    const vus: number[] = []
+    const resultat = await resoudre({ octets, graine, effort: 1, nombre: 1, fils: () => 8, onProgression: ({ filsActifs }) => vus.push(filsActifs) })
+    // Une part à l’effort 1 : 1,2 essai attendu, donc 2 fils au plus.
+    expect(resultat.fils).toBeLessThanOrEqual(2)
+    expect(Math.max(...vus)).toBeLessThanOrEqual(2)
   }, 60_000)
 })

@@ -430,15 +430,113 @@ export function msParEssai(execution: Execution, n: number = N_EQUIX): number {
   return REFERENCE_MS_PAR_ESSAI[execution] * FACTEUR_DUREE_N[n as (typeof N_VALIDES)[number]]
 }
 
-/** Nombre de fils par défaut : un par cœur annoncé, huit au plus. */
-export function filsParDefaut(): number {
+/** Nombre de fils par défaut : un par cœur annoncé, huit au plus (ou `plafond`). */
+export function filsParDefaut(plafond = 8): number {
   const coeurs = typeof navigator !== 'undefined' && Number.isInteger(navigator.hardwareConcurrency) ? navigator.hardwareConcurrency : 1
-  return Math.max(1, Math.min(8, coeurs))
+  return Math.max(1, Math.min(plafond, coeurs))
 }
 
 /** Fils utilisés par défaut : pas plus que d’essais attendus, un fil de trop ne ferait que disputer le processeur. */
 export function filsConseilles(effort: number, nombre: number): number {
   return Math.min(filsParDefaut(), Math.ceil(essaisAttendus(effort, nombre)))
+}
+
+/** État du calcul transmis à une politique de fils, après chaque essai terminé (et une fois au départ). */
+export interface EtatFils {
+  /** Essais terminés, tous fils confondus ; 0 lors de l’appel de départ. */
+  essaisTermines: number
+  /** Durée du premier essai terminé (instanciation du module comprise), ou null. */
+  dureePremierEssaiMs: number | null
+  /** Durée moyenne d’un essai sur un fil, ou null. */
+  dureeMoyenneEssaiMs: number | null
+  /** Web Workers en service. */
+  filsActifs: number
+  n: number
+  /** Exécution en cours : de quoi comparer les durées aux références (`msParEssai`). */
+  execution: Execution
+}
+
+/**
+ * Politique de fils : le nombre de Web Workers voulu, d’après l’état du calcul.
+ * Seule une hausse est appliquée (aucun fil n’est arrêté en plein essai), et
+ * jamais au-delà des essais restants attendus.
+ */
+export type PolitiqueFils = (etat: EtatFils) => number
+
+/**
+ * Seuils de `filsAdaptatifs`, surchargeables un à un par ses options.
+ * r = durée moyenne mesurée d’un essai / durée de référence pour ce n et cette exécution.
+ */
+export const SEUILS_FILS_ADAPTATIFS = {
+  /** Au plus ce nombre de fils. */
+  filsMax: 8,
+  /** Part de la mémoire de l’appareil (`navigator.deviceMemory`) que le calcul peut occuper. */
+  partMemoire: 1 / 32,
+  /** Au-delà, appareil lent : un seul fil. */
+  rapportLent: 2.5,
+  /** Au-delà (sans être lent), deux fils ; en deçà, quatre. */
+  rapportModere: 2,
+  /** En deçà, appareil rapide : jusqu’à `filsMax` fils si l’écran est bien défini. */
+  rapportRapide: 1.3,
+  /** Plus grand côté de l’écran, en pixels physiques, en dessous duquel on reste à un fil (téléphone modeste). */
+  ecranPeuDefini: 1280,
+  /** Plus grand côté à partir duquel l’écran est bien défini (ordinateur, tablette récente). */
+  ecranBienDefini: 1920,
+} as const
+
+export interface OptionsFilsAdaptatifs extends Partial<Record<keyof typeof SEUILS_FILS_ADAPTATIFS, number>> {
+  /** Mémoire de l’appareil en Go ; par défaut `navigator.deviceMemory` (Chromium seulement), null si inconnue. */
+  memoireAppareilGo?: number | null
+  /** Cœurs ; par défaut `navigator.hardwareConcurrency`. */
+  coeurs?: number
+  /** Plus grand côté de l’écran en pixels physiques ; par défaut `screen` × `devicePixelRatio`, null si inconnu. */
+  ecranPx?: number | null
+}
+
+function memoireAppareilGo(): number | null {
+  const memoire = typeof navigator !== 'undefined' ? (navigator as Navigator & { deviceMemory?: number }).deviceMemory : undefined
+  return typeof memoire === 'number' && memoire > 0 ? memoire : null
+}
+
+function ecranPx(): number | null {
+  if (typeof screen === 'undefined' || !screen) return null
+  const ratio = typeof devicePixelRatio === 'number' && devicePixelRatio > 0 ? devicePixelRatio : 1
+  const cote = Math.max(screen.width, screen.height) * ratio
+  return cote > 0 ? cote : null
+}
+
+/**
+ * Politique recommandée pour le web grand public : commencer sur un fil, puis
+ * monter seulement si l’appareil semble costaud. Trop de fils × mémoire par
+ * fil peut faire tuer l’onglet d’un téléphone sans erreur rattrapable.
+ *
+ * - Mémoire de l’appareil connue (`navigator.deviceMemory`) : d’emblée
+ *   `floor(Go × 1024 × partMemoire / Mio par fil)`, au moins 1.
+ * - Sinon, un fil jusqu’au premier essai ; puis, avec r = durée moyenne
+ *   mesurée / durée de référence et l’écran en pixels physiques : appareil
+ *   lent (r > 2,5) ou écran peu défini (< 1280 px) → 1 fil ; rapide (r < 1,3)
+ *   et écran bien défini (≥ 1920 px) → `filsMax` ; entre les deux → 2 si
+ *   r > 2, sinon 4. Un écran inconnu compte comme moyen.
+ * - Toujours au plus `filsMax` (8) et le nombre de cœurs ; `resoudre` borne en
+ *   plus aux essais restants attendus.
+ */
+export function filsAdaptatifs(options: OptionsFilsAdaptatifs = {}): PolitiqueFils {
+  const seuils = { ...SEUILS_FILS_ADAPTATIFS, ...Object.fromEntries(Object.entries(options).filter(([cle]) => cle in SEUILS_FILS_ADAPTATIFS)) } as Record<keyof typeof SEUILS_FILS_ADAPTATIFS, number>
+  return (etat) => {
+    const coeurs = options.coeurs ?? filsParDefaut(64)
+    const plafond = Math.max(1, Math.min(seuils.filsMax, coeurs))
+    const memoire = options.memoireAppareilGo === undefined ? memoireAppareilGo() : options.memoireAppareilGo
+    if (memoire !== null) {
+      const mioParFil = memoirePourN(etat.n) / 1024 / 1024
+      return Math.max(1, Math.min(plafond, Math.floor(memoire * 1024 * seuils.partMemoire / mioParFil)))
+    }
+    if (etat.dureeMoyenneEssaiMs === null) return 1
+    const rapport = etat.dureeMoyenneEssaiMs / msParEssai(etat.execution, etat.n)
+    const ecran = options.ecranPx === undefined ? ecranPx() : options.ecranPx
+    if (rapport > seuils.rapportLent || (ecran !== null && ecran < seuils.ecranPeuDefini)) return 1
+    if (rapport < seuils.rapportRapide && ecran !== null && ecran >= seuils.ecranBienDefini) return plafond
+    return Math.min(plafond, rapport > seuils.rapportModere ? 2 : 4)
+  }
 }
 
 /**
@@ -479,6 +577,8 @@ export interface Progression {
   repli: Repli | null
   /** Paramètre de mémoire de la preuve. */
   n: number
+  /** Web Workers en service ; 0 sur le fil courant. */
+  filsActifs: number
   /** Essais cumulés, tous fils confondus (depuis le début du moteur en cours). */
   essais: number
   /** Parts trouvées, au plus `nombre`. */
@@ -528,9 +628,11 @@ export interface OptionsResolution {
   signal?: AbortSignal
   /**
    * Nombre de Web Workers ; par défaut `filsConseilles` : un par cœur annoncé,
-   * huit au plus, jamais plus que d’essais attendus. 0 : fil courant.
+   * huit au plus, jamais plus que d’essais attendus. 0 : fil courant. Ou une
+   * politique (`filsAdaptatifs()`, recommandée pour le web grand public) qui
+   * fait monter le nombre de fils en cours de calcul.
    */
-  fils?: number
+  fils?: number | PolitiqueFils
   /** Fabrique de Web Worker, remplaçable (tests, politique de sécurité particulière). */
   creerTravailleur?: (moteur: Moteur, js?: CreateurEquixJs) => Worker
 }
@@ -546,7 +648,7 @@ export interface Resolution {
   /** Raison pour laquelle le moteur JavaScript a pris le relais, ou null. */
   repli: Repli | null
   n: number
-  /** Nombre de fils effectivement utilisés ; 0 pour le fil courant. */
+  /** Plus grand nombre de Web Workers en service à la fois ; 0 pour le fil courant. */
   fils: number
   dureeMs: number
   /** Mémoire maximale des modules cumulée sur tous les fils, en octets. */
@@ -599,50 +701,69 @@ function corpsTravailleur(): void {
     creerExportsEquixJs?: () => ExportsTravailleur
     genererModuleHashx?: (description: Uint8Array) => Uint8Array<ArrayBuffer>
   }
-  portee.onmessage = async (evenement: MessageEvent) => {
-    const { octets, graine, effort, debut, pas, graineMax, n, compiler, tailleDescription, tranche } = evenement.data as {
-      octets?: ArrayBuffer; graine: Uint8Array; effort: number; debut: number; pas: number; graineMax: number; n: number; compiler: boolean; tailleDescription: number; tranche: number
-    }
-    try {
-      let exports: ExportsTravailleur
-      if (octets) exports = (await WebAssembly.instantiate(octets, {})).instance.exports as unknown as ExportsTravailleur
-      else if (portee.creerExportsEquixJs) exports = portee.creerExportsEquixJs()
-      else throw new Error('Aucun moteur Equi-X dans ce Web Worker.')
-      const tampon = (): Uint8Array => new Uint8Array(exports.memory.buffer, exports.tampon_adresse(), exports.tampon_taille())
-      const tailleSolution = n / 4 + 1
-      let compilation = compiler && Boolean(octets) && typeof portee.genererModuleHashx === 'function' && exports.memory instanceof WebAssembly.Memory
-      for (let compteur = debut; compteur <= 0xffff_ffff; compteur += pas) {
-        tampon().set(graine)
-        let trouve: boolean
-        if (!compilation) trouve = exports.essayer(graine.length, effort, compteur, n) === 1
-        else if (exports.preparer(graine.length, compteur, n) !== 1) trouve = false
-        else {
-          const zone = exports.zone_programme()
-          const description = tampon().slice(zone, zone + tailleDescription)
-          try {
-            const { instance } = await WebAssembly.instantiate(portee.genererModuleHashx!(description), { e: { m: exports.memory as WebAssembly.Memory } })
-            const remplir = instance.exports.remplir as (debut: number, fin: number) => void
-            const elements = new DataView(description.buffer).getUint32(4, true)
-            for (let element = 0; element < elements; element += tranche) remplir(element, Math.min(elements, element + tranche))
-          } catch {
-            compilation = false
-            exports.remplir()
-          }
-          trouve = exports.chercher(effort) === 1
-        }
-        const solution = trouve ? tampon().slice(graineMax, graineMax + tailleSolution) : null
-        portee.postMessage({ type: 'essai', compteur, solution, memoire: exports.memory.buffer.byteLength, compilation })
+  interface Reglage {
+    octets?: ArrayBuffer; graine: Uint8Array; effort: number; graineMax: number; n: number; compiler: boolean; tailleDescription: number; tranche: number
+  }
+  let exports: ExportsTravailleur | undefined
+  let reglage: Reglage | undefined
+  let compilation = false
+  /** Un essai à la fois : chaque message attend la fin du précédent. */
+  let file: Promise<void> = Promise.resolve()
+  const essai = async (compteur: number): Promise<void> => {
+    const { graine, effort, graineMax, n, tailleDescription, tranche } = reglage!
+    const module = exports!
+    const tampon = (): Uint8Array => new Uint8Array(module.memory.buffer, module.tampon_adresse(), module.tampon_taille())
+    tampon().set(graine)
+    let trouve: boolean
+    if (!compilation) trouve = module.essayer(graine.length, effort, compteur, n) === 1
+    else if (module.preparer(graine.length, compteur, n) !== 1) trouve = false
+    else {
+      const zone = module.zone_programme()
+      const description = tampon().slice(zone, zone + tailleDescription)
+      try {
+        const { instance } = await WebAssembly.instantiate(portee.genererModuleHashx!(description), { e: { m: module.memory as WebAssembly.Memory } })
+        const remplir = instance.exports.remplir as (debut: number, fin: number) => void
+        const elements = new DataView(description.buffer).getUint32(4, true)
+        for (let element = 0; element < elements; element += tranche) remplir(element, Math.min(elements, element + tranche))
+      } catch {
+        compilation = false
+        module.remplir()
       }
-      portee.postMessage({ type: 'erreur', message: 'Compteurs épuisés.' })
-    } catch (erreur) {
-      portee.postMessage({ type: 'erreur', message: erreur instanceof Error ? erreur.message : String(erreur) })
+      trouve = module.chercher(effort) === 1
     }
+    const solution = trouve ? tampon().slice(graineMax, graineMax + n / 4 + 1) : null
+    portee.postMessage({ type: 'essai', compteur, solution, memoire: module.memory.buffer.byteLength, compilation })
+  }
+  // Messages : `{ reglage, compteur }` d’abord, puis `{ compteur }` à chaque essai demandé
+  // par le fil principal, qui distribue les compteurs un par un.
+  portee.onmessage = (evenement: MessageEvent) => {
+    const message = evenement.data as { reglage?: Reglage; compteur: number }
+    file = file.then(async () => {
+      try {
+        if (message.reglage) {
+          reglage = message.reglage
+          const { octets } = reglage
+          if (octets) exports = (await WebAssembly.instantiate(octets, {})).instance.exports as unknown as ExportsTravailleur
+          else if (portee.creerExportsEquixJs) exports = portee.creerExportsEquixJs()
+          else throw new Error('Aucun moteur Equi-X dans ce Web Worker.')
+          compilation = reglage.compiler && Boolean(octets) && typeof portee.genererModuleHashx === 'function' && exports.memory instanceof WebAssembly.Memory
+        }
+        if (!exports || !reglage) throw new Error('Web Worker Equi-X sans réglage.')
+        await essai(message.compteur)
+      } catch (erreur) {
+        portee.postMessage({ type: 'erreur', message: erreur instanceof Error ? erreur.message : String(erreur) })
+      }
+    })
   }
 }
 
 const urlsTravailleur = new Map<Moteur, string>()
 
-function travailleurParDefaut(moteur: Moteur, js?: CreateurEquixJs): Worker {
+/**
+ * Fabrique de Web Worker employée par défaut (Blob, sans fichier à publier) :
+ * à réutiliser pour envelopper les Web Workers (`creerTravailleur`).
+ */
+export function travailleurEquix(moteur: Moteur, js?: CreateurEquixJs): Worker {
   let url = urlsTravailleur.get(moteur)
   if (!url) {
     const moteurJs = moteur === 'js' && js ? `self.creerExportsEquixJs = ${js.toString()};\n` : ''
@@ -712,13 +833,14 @@ export async function resoudre(options: OptionsResolution): Promise<Resolution> 
 
 async function resoudreAvec(options: OptionsResolution, moteur: Moteur, js: CreateurEquixJs | undefined, repli: Repli | null, n: number): Promise<Resolution> {
   const { effort, nombre, signal } = options
-  const fils = options.fils === undefined ? filsConseilles(effort, nombre) : Math.max(0, Math.floor(options.fils))
+  const politique: PolitiqueFils | null = typeof options.fils === 'function' ? options.fils : null
+  const fils = politique ? 1 : options.fils === undefined ? filsConseilles(effort, nombre) : Math.max(0, Math.floor(options.fils as number))
   const disponible = typeof Worker === 'function' && typeof Blob === 'function' && typeof URL.createObjectURL === 'function'
-  const creer = options.creerTravailleur ?? (disponible ? travailleurParDefaut : undefined)
+  const creer = options.creerTravailleur ?? (disponible ? travailleurEquix : undefined)
   const compiler = moteur === 'wasm' && options.compilation !== 'jamais'
   if (fils > 0 && creer) {
     try {
-      return await resoudreEnParallele(options, moteur, js, repli, creer, fils, n, compiler)
+      return await resoudreEnParallele(options, moteur, js, repli, creer, politique ?? (() => fils), politique !== null, n, compiler)
     } catch (erreur) {
       if (signal?.aborted || !(erreur instanceof ErreurTravailleur)) throw erreur
       // Un navigateur peut refuser les Web Workers (file://, politique de sécurité) : repli local.
@@ -743,27 +865,45 @@ async function resoudreSurCeFil(options: OptionsResolution, moteur: Moteur, js: 
     essais++
     if (solution) trouvees.set(compteur, solution)
     const dureeMs = performance.now() - debut
-    onProgression?.({ moteur, compilation, repli, n, essais, parts: trouvees.size, dureeMs, restantEstimeMs: restantEstime(essais, trouvees.size, nombre, effort, dureeMs), memoireOctets: module.memoireOctets })
+    onProgression?.({ moteur, compilation, repli, n, filsActifs: 0, essais, parts: trouvees.size, dureeMs, restantEstimeMs: restantEstime(essais, trouvees.size, nombre, effort, dureeMs), memoireOctets: module.memoireOctets })
     if (trouvees.size < nombre) await new Promise<void>((resolve) => setTimeout(resolve, 0))
   }
   signal?.throwIfAborted()
   return { parts: assembler(trouvees, nombre), essais, moteur, compilation: toujoursCompile, repli, n, fils: 0, dureeMs: performance.now() - debut, memoireOctets: module.memoireOctets }
 }
 
-function resoudreEnParallele(options: OptionsResolution, moteur: Moteur, js: CreateurEquixJs | undefined, repli: Repli | null, creer: NonNullable<OptionsResolution['creerTravailleur']>, fils: number, n: number, compiler: boolean): Promise<Resolution> {
+/**
+ * Résolution sur des Web Workers. Le fil principal distribue les compteurs un
+ * par un (un résultat vaut demande du suivant) : des fils peuvent s’ajouter à
+ * tout moment, sans trou ni doublon. `voulus` donne le nombre de fils souhaité
+ * après chaque essai ; seule une hausse est appliquée, bornée (pour une
+ * politique) aux essais restants attendus. Un fil qui échoue avant tout résultat est abandonné (son
+ * compteur est redistribué) et plus aucun n’est créé ; si c’était le dernier,
+ * le calcul échoue (`ErreurTravailleur`).
+ */
+function resoudreEnParallele(options: OptionsResolution, moteur: Moteur, js: CreateurEquixJs | undefined, repli: Repli | null, creer: NonNullable<OptionsResolution['creerTravailleur']>, voulus: PolitiqueFils, borner: boolean, n: number, compiler: boolean): Promise<Resolution> {
   const { graine, effort, nombre, signal, onProgression } = options
+  const execution: Execution = moteur === 'wasm' ? (compiler ? 'wasmCompile' : 'wasm') : webAssemblyDisponible() ? 'js' : 'jsSansJit'
   return new Promise<Resolution>((resolve, reject) => {
-    const travailleurs: Worker[] = []
-    const memoires = new Map<number, number>()
+    interface Fil { travailleur: Worker; debutEssai: number; compteur: number; resultats: number; memoire: number; vivant: boolean }
+    const fils: Fil[] = []
     const trouvees = new Map<number, Uint8Array>()
     const debut = performance.now()
+    /** Compteurs à redistribuer (fil abandonné avant de les avoir essayés), puis le suivant jamais distribué. */
+    const aRefaire: number[] = []
+    let prochain = 0
     let essais = 0
+    let cumulDurees = 0
+    let dureePremierEssaiMs: number | null = null
     let memoireMax = 0
+    let filsMax = 0
     let toujoursCompile = compiler
+    let croissance = true
     let fini = false
+    const actifs = (): Fil[] => fils.filter((fil) => fil.vivant)
     const terminer = (): void => {
       fini = true
-      for (const travailleur of travailleurs) travailleur.terminate()
+      for (const fil of fils) fil.travailleur.terminate()
       signal?.removeEventListener('abort', annuler)
     }
     const annuler = (): void => {
@@ -776,37 +916,91 @@ function resoudreEnParallele(options: OptionsResolution, moteur: Moteur, js: Cre
       terminer()
       reject(new ErreurTravailleur(message))
     }
+    const compteurSuivant = (): number => {
+      const compteur = aRefaire.length ? aRefaire.shift()! : prochain++
+      if (compteur > 0xffff_ffff) throw new Error('Compteurs épuisés.')
+      return compteur
+    }
+    const confier = (fil: Fil, message: Record<string, unknown> = {}): void => {
+      fil.compteur = compteurSuivant()
+      fil.debutEssai = performance.now()
+      fil.travailleur.postMessage({ ...message, compteur: fil.compteur })
+    }
+    /** Un fil tombe : avant tout résultat, il est abandonné si d’autres calculent ; sinon, échec. */
+    const perdre = (fil: Fil, message: string): void => {
+      if (fini || !fil.vivant) return
+      fil.vivant = false
+      fil.travailleur.terminate()
+      if (fil.resultats > 0 || actifs().length === 0) return echouer(message)
+      croissance = false
+      aRefaire.push(fil.compteur)
+    }
+    const ajouter = (): boolean => {
+      let travailleur: Worker
+      try {
+        travailleur = creer(moteur, js)
+      } catch (erreur) {
+        if (actifs().length === 0) echouer(erreur instanceof Error ? erreur.message : String(erreur))
+        croissance = false
+        return false
+      }
+      const fil: Fil = { travailleur, debutEssai: 0, compteur: -1, resultats: 0, memoire: 0, vivant: true }
+      fils.push(fil)
+      filsMax = Math.max(filsMax, actifs().length)
+      travailleur.onerror = (evenement) => {
+        evenement.preventDefault?.()
+        perdre(fil, evenement.message || 'Web Worker Equi-X indisponible.')
+      }
+      travailleur.onmessage = (evenement: MessageEvent) => {
+        if (fini || !fil.vivant) return
+        const message = evenement.data as { type: string; compteur?: number; solution?: Uint8Array | null; memoire?: number; compilation?: boolean; message?: string }
+        if (message.type === 'erreur') return perdre(fil, message.message ?? 'Erreur du Web Worker Equi-X.')
+        const maintenant = performance.now()
+        const duree = maintenant - fil.debutEssai
+        essais++
+        fil.resultats++
+        cumulDurees += duree
+        dureePremierEssaiMs ??= duree
+        const compilation = message.compilation === true
+        toujoursCompile &&= compilation
+        if (message.memoire) fil.memoire = message.memoire
+        const memoire = actifs().reduce((somme, autre) => somme + autre.memoire, 0)
+        memoireMax = Math.max(memoireMax, memoire)
+        if (message.solution && message.compteur !== undefined) trouvees.set(message.compteur, message.solution)
+        const parts = Math.min(trouvees.size, nombre)
+        const dureeMs = maintenant - debut
+        if (trouvees.size >= nombre) {
+          terminer()
+          onProgression?.({ moteur, compilation, repli, n, filsActifs: actifs().length, essais, parts, dureeMs, restantEstimeMs: 0, memoireOctets: memoire })
+          resolve({ parts: assembler(trouvees, nombre), essais, moteur, compilation: toujoursCompile, repli, n, fils: filsMax, dureeMs, memoireOctets: memoireMax })
+          return
+        }
+        try {
+          croitre()
+          confier(fil)
+        } catch (erreur) {
+          return echouer(erreur instanceof Error ? erreur.message : String(erreur))
+        }
+        onProgression?.({ moteur, compilation, repli, n, filsActifs: actifs().length, essais, parts, dureeMs, restantEstimeMs: restantEstime(essais, parts, nombre, effort, dureeMs), memoireOctets: memoire })
+      }
+      const octets = moteur === 'wasm' ? options.octets!.slice().buffer : undefined
+      confier(fil, { reglage: { octets, graine, effort, graineMax: GRAINE_MAX, n, compiler, tailleDescription: TAILLE_DESCRIPTION, tranche: TRANCHE_REMPLISSAGE } })
+      return true
+    }
+    /** Ajoute les fils que la politique demande, sans dépasser les essais restants attendus. */
+    const croitre = (): void => {
+      if (!croissance) return
+      const enCours = actifs().length
+      const restants = Math.ceil((nombre - Math.min(trouvees.size, nombre)) / probabiliteEssai(effort))
+      const demande = Math.floor(voulus({
+        essaisTermines: essais, dureePremierEssaiMs, dureeMoyenneEssaiMs: essais ? cumulDurees / essais : null, filsActifs: enCours, n, execution,
+      }))
+      const cible = Math.min(Number.isFinite(demande) ? demande : 1, borner ? Math.max(1, restants) : Infinity, 64)
+      for (let fil = enCours; fil < cible && croissance && !fini; fil++) if (!ajouter()) break
+    }
     signal?.addEventListener('abort', annuler, { once: true })
     try {
-      for (let index = 0; index < fils; index++) {
-        const travailleur = creer(moteur, js)
-        travailleurs.push(travailleur)
-        travailleur.onerror = (evenement) => {
-          evenement.preventDefault?.()
-          echouer(evenement.message || 'Web Worker Equi-X indisponible.')
-        }
-        travailleur.onmessage = (evenement: MessageEvent) => {
-          if (fini) return
-          const message = evenement.data as { type: string; compteur?: number; solution?: Uint8Array | null; memoire?: number; compilation?: boolean; message?: string }
-          if (message.type === 'erreur') return echouer(message.message ?? 'Erreur du Web Worker Equi-X.')
-          essais++
-          const compilation = message.compilation === true
-          toujoursCompile &&= compilation
-          if (message.memoire) memoires.set(index, message.memoire)
-          const memoire = [...memoires.values()].reduce((somme, valeur) => somme + valeur, 0)
-          memoireMax = Math.max(memoireMax, memoire)
-          if (message.solution && message.compteur !== undefined) trouvees.set(message.compteur, message.solution)
-          const parts = Math.min(trouvees.size, nombre)
-          const dureeMs = performance.now() - debut
-          onProgression?.({ moteur, compilation, repli, n, essais, parts, dureeMs, restantEstimeMs: restantEstime(essais, parts, nombre, effort, dureeMs), memoireOctets: memoire })
-          if (trouvees.size >= nombre) {
-            terminer()
-            resolve({ parts: assembler(trouvees, nombre), essais, moteur, compilation: toujoursCompile, repli, n, fils, dureeMs, memoireOctets: memoireMax })
-          }
-        }
-        const octets = moteur === 'wasm' ? options.octets!.slice().buffer : undefined
-        travailleur.postMessage({ octets, graine, effort, debut: index, pas: fils, graineMax: GRAINE_MAX, n, compiler, tailleDescription: TAILLE_DESCRIPTION, tranche: TRANCHE_REMPLISSAGE })
-      }
+      if (ajouter()) croitre()
     } catch (erreur) {
       echouer(erreur instanceof Error ? erreur.message : String(erreur))
     }
