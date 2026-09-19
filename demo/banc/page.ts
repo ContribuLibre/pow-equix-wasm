@@ -6,7 +6,7 @@ import { descriptionAppareil, horodatage } from '../outils.ts'
 import type { Langue } from '../textes.ts'
 import { type Environnement, calibrer, calibrerDifficulte, configurations, debitMaximal, debitVerification, repetition, resumer } from './executeur.ts'
 import {
-  DUREE_BANC_VERIFICATION_MS, DUREE_DEBIT_RAPIDE_MS, type FichierScenarios, REPETITIONS_RAPIDE, type Scenario, type Statistiques, TENTATIVES_MAX,
+  DUREE_BANC_VERIFICATION_MS, DUREE_DEBIT_RAPIDE_MS, type FichierScenarios, REGULARITE_MAX, REPETITIONS_RAPIDE, type Scenario, type Statistiques, TENTATIVES_MAX, auDessusDeLaCible,
   cleConfiguration, empreinteFichier, essaisAttendusScenario, estimerScenario, fichierProvisoire, msParEssaiReference, plafondFils, validerFichierScenarios,
 } from './scenarios.ts'
 import { type ExportBanc, FORMAT_BANC, type FicheAppareil, type ResultatScenario, VERSION_BANC } from './schema.ts'
@@ -121,7 +121,9 @@ const repetitionsEffectives = (scenario: Scenario): number => (rapide.checked ? 
 const dureeDebit = (): number => (rapide.checked ? DUREE_DEBIT_RAPIDE_MS : fichierScenarios?.dureeDebitMs ?? 0)
 const plafond = (scenario: Scenario) => plafondFils(scenario, coeurs, detecte.memoireAppareilGo)
 const msParEssai = (scenario: Scenario): number => vitesses.get(cleConfiguration(scenario)) ?? msParEssaiReference(scenario)
-const estimation = (scenario: Scenario): number => estimerScenario(scenario, plafond(scenario).retenus, msParEssai(scenario), repetitionsEffectives(scenario)) + dureeDebit()
+/** Fenêtre du débit maximal : au moins dureeDebitMs, et le temps d’un défi sur un fil (plus un pour finir). */
+const fenetreDebit = (scenario: Scenario): number => Math.max(dureeDebit(), 2 * essaisAttendusScenario(scenario) * msParEssai(scenario))
+const estimation = (scenario: Scenario): number => estimerScenario(scenario, plafond(scenario).retenus, msParEssai(scenario), repetitionsEffectives(scenario)) + fenetreDebit(scenario)
 const dureeVerification = (): number => configurations(scenarios).length * (coeurs > 1 ? 2 : 1) * (DUREE_BANC_VERIFICATION_MS + 500)
 const stockage = (): Stockage => new Stockage(localStorage, appareil, empreinte, rapide.checked)
 
@@ -261,9 +263,12 @@ element('calibrer-difficultes').addEventListener('click', () => executer(async (
   const calibres: Scenario[] = []
   for (const scenario of source.scenarios) {
     const resultat = await calibrerDifficulte(scenario, plafond(scenario).retenus, cible, env, {
-      onTour: (difficulte, mediane) => { etat.textContent = t.calibrageDifficulte(scenario.id, difficulte, duree(mediane), duree(cible)) },
+      onTour: (difficulte, mediane, parts) => { etat.textContent = t.calibrageDifficulte(`${scenario.id} (${parts} parts)`, difficulte, duree(mediane), duree(cible)) },
     })
-    calibres.push({ ...scenario, difficulte: resultat.difficulte, calibrage: { medianeMs: Math.round(resultat.medianeMs), repetitions: resultat.defis } } as Scenario)
+    calibres.push({
+      ...scenario, difficulte: resultat.difficulte, parts: resultat.parts,
+      calibrage: { medianeMs: Math.round(resultat.medianeMs), repetitions: resultat.defis, rapportP90P10: Number(resultat.rapportP90P10.toFixed(3)), ...(resultat.parts !== scenario.parts ? { partsInitiales: scenario.parts } : {}) },
+    } as Scenario)
   }
   const saisie = saisi()
   ecrireFichier({ ...source, scenarios: calibres, calibrage: { date: new Date().toISOString(), appareil: [saisie.modele, saisie.processeur].filter(Boolean).join(', ') || descriptionAppareil(detecte.agent), agent: detecte.agent } })
@@ -314,7 +319,7 @@ element('lancer').addEventListener('click', () => executer(async (env) => {
   for (const [rang, scenario] of scenarios.entries()) {
     const repetitions = repetitionsEffectives(scenario)
     const p = plafond(scenario)
-    const parRepetition = (estimation(scenario) - dureeDebit()) / repetitions
+    const parRepetition = (estimation(scenario) - fenetreDebit(scenario)) / repetitions
     // Jusqu’à 3 tentatives ; une annulation n’en consomme pas.
     while (magasin.commencerTentative(scenario.id)) {
       const courant = magasin.lire(scenario.id)
@@ -332,7 +337,7 @@ element('lancer').addEventListener('click', () => executer(async (env) => {
           etat.textContent = t.debitEnCours(scenario.id, p.retenus, duree(dureeDebit()))
           const debit = await debitMaximal(scenario, p.retenus, env, dureeDebit())
           magasin.modifier(scenario.id, (e) => { e.debitMaximal = debit })
-          avancer(dureeDebit())
+          avancer(fenetreDebit(scenario))
         }
         magasin.modifier(scenario.id, (e) => { e.statut = 'complet' })
         afficherResultats(construireResultats())
@@ -390,10 +395,11 @@ function afficherResultats(resultats: ResultatScenario[]): void {
     const premiere = resultat.repetitions[0]
     const memoire = premiere ? `${taille(premiere.memoireOctets)}${premiere.memoire === 'estimee' ? ' ≈' : ''}` : ''
     const fils = resultat.plafond.applique ? t.plafond(resultat.plafond.retenus, resultat.plafond.demandes) : String(resultat.filsEffectifs)
-    if (!resultat.repetitions.length) return [resultat.scenario.id, t.statuts[resultat.statut], fils, '0', ...Array(15).fill('')]
+    if (!resultat.repetitions.length) return [resultat.scenario.id, t.statuts[resultat.statut], fils, '0', ...Array(16).fill('')]
+    const cible = fichierScenarios?.dureeCibleMs ?? 0
     return [
-      resultat.scenario.id, t.statuts[resultat.statut], fils, String(s.nombre), d(s, 'mediane'), d(s, 'moyenne'), d(s, 'p5'), d(s, 'p10'), d(s, 'p90'), d(s, 'p95'), d(s, 'min'), d(s, 'max'),
-      nombres.format(s.rapportP95P5), `${resultat.debit100s.mesure ?? '—'} (≈ ${nombres.format(resultat.debit100s.extrapole)})`,
+      `${resultat.scenario.id}${cible && auDessusDeLaCible(resultat.scenario, s.mediane, cible) ? ` (${t.auDessus})` : ''}`, t.statuts[resultat.statut], fils, String(s.nombre), d(s, 'mediane'), d(s, 'moyenne'), d(s, 'p5'), d(s, 'p10'), d(s, 'p90'), d(s, 'p95'), d(s, 'min'), d(s, 'max'),
+      `${nombres.format(s.rapportP90P10)}${s.rapportP90P10 > REGULARITE_MAX ? ' ⚠' : ''}`, nombres.format(s.rapportP95P5), `${resultat.debit100s.mesure ?? '—'} (≈ ${nombres.format(resultat.debit100s.extrapole)})`,
       resultat.debitMaximal ? nombres.format(resultat.debitMaximal.parCentSecondes) : '—',
       nombres.format(resultat.statistiques.essais.moyenne), duree(resultat.statistiques.verificationMs.mediane), taille(resultat.statistiques.tailleOctets.moyenne), memoire,
     ]

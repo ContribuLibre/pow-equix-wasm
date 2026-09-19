@@ -41,13 +41,15 @@ export type StatutScenario = 'complet' | 'incomplet' | 'enCours' | 'nonCommence'
 
 /**
  * Débit maximal de l’appareil : `concurrence` défis en parallèle, un fil
- * chacun, enchaînés pendant `dureeMs` ; défis finis dans la fenêtre.
+ * chacun, enchaînés au moins `dureeMs` du fichier de scénarios et jusqu’à ce
+ * que chaque voie ait fini un défi ; rythme de chaque voie mesuré sur ses
+ * défis finis, voies additionnées.
  */
 export interface DebitMaximal {
   concurrence: number
   dureeMs: number
   defis: number
-  /** Défis résolus en 100 s à ce rythme (mesuré directement si dureeMs = 100 000). */
+  /** Défis résolus en 100 s à ce rythme (mesure directe si la fenêtre a duré au moins 100 s). */
   parCentSecondes: number
   dureeMoyenneDefiMs: number | null
 }

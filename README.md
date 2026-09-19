@@ -42,7 +42,7 @@ ensuite le **nombre d’essais** à trouver.
 | | Mémoire nécessaire au calcul sans parallélisation | < 1 Kio | 64 Mio | réglable de 2 Mio à 64 Mio |
 | | Vérifier une preuve : temps | 1 empreinte, ≈ 1 µs | **1 essai complet, ≈ 0,1 à 1 s** | **≈ 0,2 ms par part** |
 | | Vérifier une preuve : mémoire | négligeable | **64 Mio par vérification** | négligeable |
-| Combien de preuves pour que la durée du défi varie au plus, du simple au double, sur 90% des cas | | x | y | z |
+| Combien de preuves pour que la durée du défi varie au plus, du simple au double, sur 80% des cas | | x | y | z |
 | | Taille des preuves | x*h=?? | y*h=?? | z*h=?? |
 | | **Temps pour vérifier** les preuves du défi | ?? | ?? | ?? |
 | | **Mémoire pour vérifier** les preuves du défi | négligeable | **64 Mio par vérification** | négligeable |
@@ -511,15 +511,21 @@ standardisé, qui fait partie de la démo seulement (rien n’en entre dans
   (`dureeDebitMs`), machine de référence du calibrage, et scénarios
   `{ id, libelle, algorithme, parametres, parts, difficulte, fils,
   sansParallelisation, repetitions }`. Son empreinte (SHA-256) identifie les
-  résultats. **Les valeurs par défaut sont provisoires**, en attente
-  d’arbitrage ; Argon2id y figure à deux réglages de mémoire (16 et 64 Mio,
-  t = 1, p = 1) : sa mémoire se règle, comme celle d’Equi-X (n).
-- **Mode « calibrer »** (machine de référence seulement) : pour chaque
-  scénario, difficulté estimée d’après la vitesse mesurée, puis ajustée sur
-  des défis réels jusqu’à ce que la médiane approche la durée cible, et figée
-  dans le fichier de scénarios (avec la machine et la date), que les autres
-  machines importent tel quel. SHA-256 et Argon2id ne se règlent que par bits
-  entiers : leur médiane reste à un facteur √2 près de la cible.
+  résultats. Valeurs par défaut arbitrées : défi visé ≈ 1 s (médiane, tous
+  les cœurs, sur le PC de référence), 80 % des défis dans un rapport ≤ 2 ;
+  SHA-256 13 parts de 19 bits ; Argon2id 16 Mio 12 parts de 2 bits et 64 Mio
+  5 parts de 1 bit (t = 1, p = 1 : sa mémoire se règle, comme celle
+  d’Equi-X) ; Equi-X n = 60 13 parts d’effort 33, n = 72 7 parts d’effort 7,
+  n = 80 3 parts d’effort 2 (≈ 1,3 s, gardé au-dessus de la cible, avec un
+  plancher de difficulté). La durée de mesure du débit reste provisoire.
+- **Mode « calibrer »** (PC de référence seulement, tous les cœurs) : pour
+  chaque scénario, la difficulté (issue de la simulation) est ajustée sur des
+  défis réels jusqu’à ce que la médiane approche 1 s, sans descendre sous son
+  plancher ; le nombre de parts ne change que si p90/p10 dépasse 2 sur 30
+  défis de contrôle. Le résultat est figé dans le fichier de scénarios (avec la
+  machine, la date, la médiane et p90/p10 obtenus), que les autres machines
+  importent tel quel. SHA-256 et Argon2id ne se règlent que par bits entiers :
+  leur médiane reste à un facteur √2 près de la cible.
 - **Fils** : tous les cœurs par défaut, un seul pour les lignes
   `sansParallelisation`. Pour Argon2id et Equi-X, un plafond mémoire évite de
   faire tuer l’onglet d’un téléphone : 1/32 de `navigator.deviceMemory`, ou
@@ -531,7 +537,8 @@ standardisé, qui fait partie de la démo seulement (rien n’en entre dans
   essais, mémoire (mesurée pour Equi-X, estimée pour Argon2id et SHA-256),
   taille de la preuve, puis vérification (temps, mémoire, validité).
   **Statistiques** : médiane, moyenne, p5, p10, p90, p95, min, max, rapport
-  p95/p5. Puis le **débit maximal** de l’appareil : autant de défis en
+  p90/p10 (critère de régularité : ≤ 2, soit 80 % des défis « du simple au
+  double ») et p95/p5 pour information. Puis le **débit maximal** de l’appareil : autant de défis en
   parallèle que de fils permis, un fil chacun (sans les essais perdus d’un
   défi court réparti sur plusieurs fils), enchaînés pendant `dureeDebitMs`,
   ramenés à « défis résolus en 100 s » (mesure directe si `dureeDebitMs`

@@ -9,7 +9,7 @@ import { calibrer, calibrerDifficulte, debitMaximal, debitVerification, repetiti
 import { tailleNonces, verifierNonces, zerosEnTete } from '../demo/banc/moteurs.ts'
 import {
   BUDGET_MEMOIRE_INCONNU_MIO, type Scenario, SCENARIOS_PROVISOIRES, TENTATIVES_MAX, ajusterDifficulte, centile, debit100s, difficultePourDuree, empreinteFichier,
-  essaisAttendusScenario, estimerScenario, fichierProvisoire, plafondFils, statistiques, validerFichierScenarios, validerScenarios,
+  auDessusDeLaCible, essaisAttendusScenario, estimerScenario, fichierProvisoire, plafondFils, statistiques, validerFichierScenarios, validerScenarios,
 } from '../demo/banc/scenarios.ts'
 import { Stockage, type Support } from '../demo/banc/stockage.ts'
 import { type ExportBanc, FORMAT_BANC, VERSION_BANC } from '../demo/banc/schema.ts'
@@ -49,12 +49,19 @@ describe('SHA-256 spécialisé pour hashcash', () => {
 })
 
 describe('scénarios et statistiques', () => {
-  test('les scénarios provisoires sont valides, marqués comme tels, avec au moins 100 répétitions', () => {
+  test('les scénarios par défaut sont ceux arbitrés, valides, avec au moins 100 répétitions sur tous les cœurs', () => {
     expect(validerScenarios(SCENARIOS_PROVISOIRES)).toEqual({ scenarios: SCENARIOS_PROVISOIRES })
-    expect(SCENARIOS_PROVISOIRES.every((scenario) => scenario.libelle?.startsWith('PROVISOIRE') && scenario.repetitions >= 100)).toBe(true)
-    // Argon2id à deux réglages de mémoire, et une ligne sans parallélisation.
-    expect(SCENARIOS_PROVISOIRES.filter((s) => s.algorithme === 'argon2id').map((s) => s.algorithme === 'argon2id' && s.parametres.memoireKio)).toEqual([16_384, 65_536])
-    expect(SCENARIOS_PROVISOIRES.some((s) => s.sansParallelisation)).toBe(true)
+    const resume = SCENARIOS_PROVISOIRES.map((s) => `${s.algorithme}${s.algorithme === 'argon2id' ? `-${s.parametres.memoireKio / 1024}m` : s.algorithme === 'equix' ? `-n${s.parametres.n}` : ''} ${s.parts}×${s.difficulte}`)
+    expect(resume).toEqual(['sha256 13×19', 'argon2id-16m 12×2', 'argon2id-64m 5×1', 'equix-n60 13×33', 'equix-n72 7×7', 'equix-n80 3×2'])
+    expect(SCENARIOS_PROVISOIRES.every((s) => s.repetitions >= 100 && s.fils === 'coeurs')).toBe(true)
+    expect(fichierProvisoire().dureeCibleMs).toBe(1000)
+    // n = 80 reste au-dessus de la cible : plancher d’effort 2, signalé dans le libellé.
+    const n80 = SCENARIOS_PROVISOIRES.find((s) => s.id === 'equix-n80-3x2')!
+    expect(n80.difficulteMin).toBe(2)
+    expect(n80.libelle).toContain('au-dessus de la cible')
+    expect(ajusterDifficulte(n80, 1300, 1000)).toBe(2)
+    expect(auDessusDeLaCible(n80, 1300, 1000)).toBe(true)
+    expect(auDessusDeLaCible(n80, 1100, 1000)).toBe(false)
   })
 
   test('le fichier de scénarios se valide, accepte une simple liste, et son empreinte change avec son contenu', async () => {
@@ -69,9 +76,9 @@ describe('scénarios et statistiques', () => {
   })
 
   test('tous les cœurs par défaut, un fil sans parallélisation, et plafond mémoire signalé', () => {
-    const argon64 = SCENARIOS_PROVISOIRES.find((s) => s.id === 'argon2id-64m-4x1')!
-    const equix = SCENARIOS_PROVISOIRES.find((s) => s.id === 'equix-n60-4x4')!
-    const seul = SCENARIOS_PROVISOIRES.find((s) => s.sansParallelisation)!
+    const argon64 = SCENARIOS_PROVISOIRES.find((s) => s.id === 'argon2id-64m-5x1')!
+    const equix = SCENARIOS_PROVISOIRES.find((s) => s.id === 'equix-n60-13x33')!
+    const seul: Scenario = { ...equix, id: 'seul', sansParallelisation: true }
     const sha = SCENARIOS_PROVISOIRES.find((s) => s.algorithme === 'sha256')!
     expect(plafondFils(sha, 16, null)).toMatchObject({ demandes: 16, retenus: 16, applique: false })
     expect(plafondFils(seul, 16, 8)).toMatchObject({ demandes: 1, retenus: 1, applique: false })
@@ -120,7 +127,8 @@ describe('scénarios et statistiques', () => {
     expect(centile([10, 20], 0.95)).toBeCloseTo(19.5)
     const valeurs = Array.from({ length: 101 }, (_, rang) => rang + 100)
     const s = statistiques(valeurs)
-    expect([s.min, s.p5, s.mediane, s.p95, s.max, s.moyenne]).toEqual([100, 105, 150, 195, 200, 150])
+    expect([s.min, s.p5, s.p10, s.mediane, s.p90, s.p95, s.max, s.moyenne]).toEqual([100, 105, 110, 150, 190, 195, 200, 150])
+    expect(s.rapportP90P10).toBeCloseTo(190 / 110)
     expect(s.rapportP95P5).toBeCloseTo(195 / 105)
     expect(debit100s([1000, 1000, 1000])).toEqual({ extrapole: 100, mesure: null })
     expect(debit100s(Array.from({ length: 150 }, () => 1000))).toEqual({ extrapole: 100, mesure: 100 })
@@ -167,14 +175,29 @@ describe('exécution sur de vrais Web Workers', () => {
     const debit = await debitMaximal(scenario, 2, env, 800)
     expect(debit.concurrence).toBe(2)
     expect(debit.defis).toBeGreaterThan(2)
-    expect(debit.parCentSecondes).toBeCloseTo(debit.defis * 100_000 / debit.dureeMs)
+    // Rythme mesuré voie par voie sur les défis finis : proche du compte brut sur la fenêtre, sans le défi abandonné.
+    expect(debit.dureeMs).toBeGreaterThanOrEqual(800)
+    expect(debit.parCentSecondes).toBeGreaterThanOrEqual(debit.defis * 100_000 / debit.dureeMs * 0.9)
+    expect(debit.parCentSecondes).toBeLessThan(debit.defis * 100_000 / debit.dureeMs * 2)
     expect(debit.dureeMoyenneDefiMs).toBeGreaterThan(0)
   }, 30_000)
 
-  test('mode calibrer : la difficulté converge vers la durée cible', async () => {
+  test('débit maximal : attend que chaque voie ait fini un défi, même au-delà de la fenêtre', async () => {
+    // Défi d’environ 100 ms sur un fil, fenêtre de 20 ms : la mesure attend la fin du premier défi de chaque voie.
+    const scenario: Scenario = { id: 'lent', algorithme: 'sha256', parametres: {}, parts: 1, difficulte: 16, repetitions: 1 }
+    const debit = await debitMaximal(scenario, 2, env, 20)
+    expect(debit.defis).toBeGreaterThanOrEqual(2)
+    expect(debit.parCentSecondes).toBeGreaterThan(0)
+  }, 30_000)
+
+  test('mode calibrer : la difficulté converge vers la durée cible, et les parts augmentent si p90/p10 dépasse 2', async () => {
     const scenario: Scenario = { id: 'sha', algorithme: 'sha256', parametres: {}, parts: 2, difficulte: 0, repetitions: 1 }
     const tours: number[] = []
-    const resultat = await calibrerDifficulte(scenario, 2, 60, env, { defis: 7, onTour: (difficulte) => tours.push(difficulte) })
+    const resultat = await calibrerDifficulte(scenario, 2, 60, env, { defis: 7, defisControle: 20, onTour: (difficulte) => tours.push(difficulte) })
+    // 2 parts : p90/p10 dépasse souvent 2 ; alors le calibrage ajoute des parts.
+    expect(resultat.parts).toBeGreaterThanOrEqual(2)
+    if (resultat.parts > 2) expect(tours.length).toBeGreaterThan(2)
+    expect(resultat.rapportP90P10).toBeGreaterThan(1)
     expect(tours.length).toBeGreaterThan(0)
     // Réglage par bits entiers : médiane à un facteur ≈ 2 près de la cible, sur une machine chargée.
     expect(resultat.medianeMs).toBeGreaterThan(15)
@@ -214,6 +237,8 @@ describe('agrégation de plusieurs appareils', () => {
     expect(agregat.colonnes.map((c) => c.id)).toEqual(['eq'])
     expect(ligne('Vérifier une preuve : temps')).toEqual(['250,0 µs'])
     expect(ligne('Combien de parts')).toEqual(['4 parts'])
+    expect(ligne('Parts, et rapport p90/p10')[0]).toMatch(/^4 parts : 1,\d\d \(p95\/p5 : 1,\d\d\)$/)
+    expect(ligne('Durée médiane d’un défi sur la machine de référence')[0]).toBe('748 ms (cible 1,00 s)')
     // Débit maximal (défis en parallèle) par appareil, extrapolé de 30 s ; latence à part.
     expect(ligne('sur PC 2020')).toEqual(['200 ¹'])
     expect(ligne('sur Mobile')).toEqual(['50,0 ¹'])

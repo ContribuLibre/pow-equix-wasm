@@ -24,7 +24,7 @@ import { readFileSync } from 'node:fs'
 import { basename } from 'node:path'
 import { descriptionAppareil } from '../demo/outils.ts'
 import type { Scenario } from '../demo/banc/scenarios.ts'
-import { centile } from '../demo/banc/scenarios.ts'
+import { auDessusDeLaCible, centile } from '../demo/banc/scenarios.ts'
 import { type ExportBanc, FORMAT_BANC, type ResultatScenario, VERSION_BANC } from '../demo/banc/schema.ts'
 
 export interface Ligne { libelle: string; valeurs: Array<string | null> }
@@ -103,11 +103,17 @@ export function agreger(fichiers: ExportBanc[], attaques: MaterielAttaque[] = []
     { libelle: 'Mémoire nécessaire au calcul sans parallélisation (par fil)', valeurs: parColonne((liste) => memoire(liste, (r) => ({ octets: mediane(r.repetitions.map((rep) => rep.memoireOctets)) / r.filsEffectifs, mode: r.repetitions[0]?.memoire ?? 'mesuree' }))) },
     { libelle: 'Vérifier une preuve : temps (par part, médiane)', valeurs: parColonne((liste) => duree(mediane(liste.map((r) => r.statistiques.verificationMs.mediane / r.scenario.parts)))) },
     { libelle: 'Vérifier une preuve : mémoire', valeurs: parColonne((liste) => memoire(liste, (r) => ({ octets: r.repetitions[0]?.verification.memoireOctets ?? 0, mode: r.repetitions[0]?.verification.memoire ?? 'mesuree' }))) },
-    { libelle: 'Parts, et rapport p95/p5 de la durée du défi (pire appareil ; ≤ 2 : du simple au double sur 90 % des cas)', valeurs: parColonne((liste) => `${liste[0]!.scenario.parts} parts : ${Math.max(...liste.map((r) => r.statistiques.dureeMs.rapportP95P5)).toFixed(2).replace('.', ',')}`) },
+    {
+      libelle: 'Parts, et rapport p90/p10 de la durée du défi (pire appareil ; ≤ 2 : du simple au double sur 80 % des cas ; p95/p5 pour information)',
+      valeurs: parColonne((liste) => {
+        const pire = (cle: 'rapportP90P10' | 'rapportP95P5'): string => virgule(Math.max(...liste.map((r) => r.statistiques.dureeMs[cle])).toFixed(2))
+        return `${liste[0]!.scenario.parts} parts : ${pire('rapportP90P10')} (p95/p5 : ${pire('rapportP95P5')})`
+      }),
+    },
     {
       // Parmi les scénarios d’un même algorithme et mêmes paramètres, le plus petit nombre de parts
-      // dont la durée reste « du simple au double » (p95/p5 ≤ 2) sur 90 % des défis, sur tous les appareils.
-      libelle: 'Combien de parts pour que p95/p5 ≤ 2 sur tous les appareils (parmi les scénarios mesurés)',
+      // dont la durée reste « du simple au double » (p90/p10 ≤ 2) sur 80 % des défis, sur tous les appareils.
+      libelle: 'Combien de parts pour que p90/p10 ≤ 2 sur tous les appareils (parmi les scénarios mesurés)',
       valeurs: colonnes.map((colonne) => {
         const reference = resultats(colonne.id)[0]!.scenario
         const semblables = colonnes.filter((autre) => {
@@ -115,7 +121,7 @@ export function agreger(fichiers: ExportBanc[], attaques: MaterielAttaque[] = []
           return scenario.algorithme === reference.algorithme && JSON.stringify(scenario.parametres) === JSON.stringify(reference.parametres)
         })
         const conformes = semblables
-          .map((autre) => ({ parts: resultats(autre.id)[0]!.scenario.parts, pire: Math.max(...resultats(autre.id).map((r) => r.statistiques.dureeMs.rapportP95P5)) }))
+          .map((autre) => ({ parts: resultats(autre.id)[0]!.scenario.parts, pire: Math.max(...resultats(autre.id).map((r) => r.statistiques.dureeMs.rapportP90P10)) }))
           .filter((mesure) => mesure.pire <= 2)
           .sort((a, b) => a.parts - b.parts)
         const plusGrand = Math.max(...semblables.map((autre) => resultats(autre.id)[0]!.scenario.parts))
@@ -142,6 +148,18 @@ export function agreger(fichiers: ExportBanc[], attaques: MaterielAttaque[] = []
     lignes.push({ libelle: `avec ${materiel.nom}${materiel.description ? ` {${materiel.description}}` : ''} ¹`, valeurs: colonnes.map((colonne) => (materiel.debits[colonne.id] === undefined ? null : nombre(materiel.debits[colonne.id]!))) })
   }
   lignes.push({ libelle: 'Latence d’un défi seul sur tous les cœurs (médiane, pire appareil)', valeurs: parColonne((liste) => duree(Math.max(...liste.map((r) => r.statistiques.dureeMs.mediane)))) })
+  // Médiane sur la machine de référence du calibrage (sinon le meilleur appareil), comparée à la durée cible.
+  lignes.push({
+    libelle: 'Durée médiane d’un défi sur la machine de référence (cible du fichier de scénarios)',
+    valeurs: colonnes.map((colonne) => {
+      const avec = fichiers.map((fichier) => ({ fichier, resultat: fichier.scenarios.find((r) => r.scenario.id === colonne.id && r.repetitions.length > 0) })).filter((x) => x.resultat)
+      if (!avec.length) return null
+      const reference = avec.find((x) => x.fichier.fichierScenarios.calibrage?.agent === x.fichier.appareil.detecte.agent) ?? avec.sort((a, b) => a.resultat!.statistiques.dureeMs.mediane - b.resultat!.statistiques.dureeMs.mediane)[0]!
+      const cible = reference.fichier.fichierScenarios.dureeCibleMs
+      const mediane = reference.resultat!.statistiques.dureeMs.mediane
+      return `${duree(mediane)} (cible ${duree(cible)})${auDessusDeLaCible(reference.resultat!.scenario, mediane, cible) ? ', au-dessus de la cible' : ''}`
+    }),
+  })
   lignes.push({
     libelle: 'Écart en scénario d’usage : meilleur appareil ÷ plus faible',
     valeurs: parColonne((liste) => (liste.length < 2 ? null : `× ${nombre(Math.max(...liste.map(debit)) / Math.min(...liste.map(debit)))}`)),

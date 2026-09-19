@@ -38,6 +38,7 @@ export interface TextesBanc {
     difficultesCalibrees: (cible: string) => string
     plafond: (retenus: number, demandes: number) => string
     statuts: Record<'complet' | 'incomplet' | 'enCours' | 'nonCommence', string>
+    auDessus: string
   }
 }
 
@@ -64,7 +65,7 @@ const fr: TextesBanc = {
     remarques: 'Remarques',
     remarquesExemple: 'ex. sur secteur, autres applications fermées',
     scenarios: 'Scénarios',
-    provisoire: 'Valeurs provisoires : les scénarios par défaut ne sont pas encore arbitrés. Modifie le JSON ci-dessous, ou importe un fichier de scénarios.',
+    provisoire: 'Scénarios par défaut : défi visé ≈ 1 s (médiane, tous les cœurs, sur le PC de référence), 80 % des défis dans un rapport ≤ 2 (p90/p10 ≤ 2). Difficultés issues d’une simulation : à calibrer sur le PC de référence, puis à importer telles quelles ailleurs. La durée de mesure du débit maximal (dureeDebitMs) reste provisoire.',
     scenariosAide: 'Fichier JSON pow-equix-wasm/banc-scenarios : dureeCibleMs (médiane visée par le calibrage), dureeDebitMs (mesure du débit maximal), calibrage (machine de référence), et scenarios : { id, libelle, algorithme (sha256, argon2id, equix), parametres, parts, difficulte, fils (« coeurs » par défaut), sansParallelisation, repetitions }. Difficulté : bits nuls en tête pour SHA-256 et Argon2id, effort pour Equi-X. La mémoire se règle pour Argon2id { memoireKio, iterations, parallelisme } comme pour Equi-X { n, compilation }. Les fils sont plafonnés par la mémoire de l’appareil (Argon2id, Equi-X).',
     importerScenarios: 'Importer des scénarios…',
     exporterScenarios: 'Télécharger les scénarios',
@@ -75,7 +76,7 @@ const fr: TextesBanc = {
     exporterPartiel: 'Exporter maintenant (même partiel)',
     effacer: 'Effacer les résultats stockés',
     reference: 'Machine de référence',
-    referenceAide: 'Sur la machine de référence seulement : ajuste la difficulté de chaque scénario pour que la médiane d’un défi atteigne dureeCibleMs, puis fige le résultat dans le fichier de scénarios, à télécharger et à importer tel quel sur les autres machines.',
+    referenceAide: 'Sur le PC de référence seulement, tous les cœurs : ajuste la difficulté de chaque scénario pour que la médiane d’un défi atteigne dureeCibleMs (1 s), sans changer le nombre de parts sauf si p90/p10 dépasse 2 sur 30 défis de contrôle, puis fige le résultat dans le fichier de scénarios, à télécharger et à importer tel quel sur les autres machines.',
     calibrerDifficultes: 'Calibrer les difficultés sur cette machine',
     estimationAide: 'D’après des durées de référence, puis d’après une mesure de vitesse sur cet appareil. Pour chaque scénario : les défis seuls sur tous les cœurs (latence), puis le débit maximal (dureeDebitMs), puis le banc de vérification (3 s par configuration, sur 1 fil puis sur tous les cœurs). Chaque défi terminé est enregistré dans ce navigateur : après un plantage, relancer reprend où le banc s’était arrêté (3 tentatives au plus par scénario).',
     lancer: 'Lancer le banc',
@@ -107,7 +108,7 @@ const fr: TextesBanc = {
     termine: 'Banc terminé.',
     annule: 'Banc annulé.',
     erreur: (message) => `Erreur : ${message}`,
-    colonnesResultats: ['Scénario', 'Statut', 'Fils', 'Défis', 'Médiane', 'Moyenne', 'p5', 'p10', 'p90', 'p95', 'Min', 'Max', 'p95/p5', 'Défis seuls en 100 s', 'Débit maximal (défis en 100 s)', 'Essais (moy.)', 'Vérification (méd.)', 'Taille', 'Mémoire'],
+    colonnesResultats: ['Scénario', 'Statut', 'Fils', 'Défis', 'Médiane', 'Moyenne', 'p5', 'p10', 'p90', 'p95', 'Min', 'Max', 'p90/p10 (≤ 2 visé)', 'p95/p5', 'Défis seuls en 100 s', 'Débit maximal (défis en 100 s)', 'Essais (moy.)', 'Vérification (méd.)', 'Taille', 'Mémoire'],
     colonnesVerification: ['Algorithme', 'Paramètres', 'Fils', 'Vérifications/s'],
     nonRepresentatif: 'Mode rapide : résultats non représentatifs.',
     importes: (nom) => `Scénarios importés de « ${nom} ».`,
@@ -121,6 +122,7 @@ const fr: TextesBanc = {
     difficultesCalibrees: (cible) => `Difficultés calibrées pour une médiane de ${cible} : télécharge le fichier de scénarios pour les autres machines.`,
     plafond: (retenus, demandes) => `${retenus} (plafond mémoire, ${demandes} demandés)`,
     statuts: { complet: 'complet', incomplet: 'incomplet', enCours: 'en cours', nonCommence: 'non commencé' },
+    auDessus: 'au-dessus de la cible',
   },
 }
 
@@ -147,7 +149,7 @@ const en: TextesBanc = {
     remarques: 'Notes',
     remarquesExemple: 'e.g. plugged in, other applications closed',
     scenarios: 'Scenarios',
-    provisoire: 'Provisional values: the default scenarios are not settled yet. Edit the JSON below, or import a scenario file.',
+    provisoire: 'Default scenarios: challenge targeted at ≈ 1 s (median, all cores, on the reference PC), 80 % of challenges within a factor ≤ 2 (p90/p10 ≤ 2). Difficulties come from a simulation: calibrate them on the reference PC, then import them as is elsewhere. The maximum throughput measurement duration (dureeDebitMs) is still provisional.',
     scenariosAide: 'JSON file pow-equix-wasm/banc-scenarios: dureeCibleMs (median targeted by calibration), dureeDebitMs (maximum throughput measurement), calibrage (reference machine), and scenarios: { id, libelle, algorithme (sha256, argon2id, equix), parametres, parts, difficulte, fils (“coeurs” by default), sansParallelisation, repetitions }. Difficulty: leading zero bits for SHA-256 and Argon2id, effort for Equi-X. Memory is tunable for Argon2id { memoireKio, iterations, parallelisme } as for Equi-X { n, compilation }. Threads are capped by the device memory (Argon2id, Equi-X).',
     importerScenarios: 'Import scenarios…',
     exporterScenarios: 'Download scenarios',
@@ -158,7 +160,7 @@ const en: TextesBanc = {
     exporterPartiel: 'Export now (even partial)',
     effacer: 'Clear stored results',
     reference: 'Reference machine',
-    referenceAide: 'On the reference machine only: adjusts the difficulty of each scenario so that the median challenge reaches dureeCibleMs, then freezes the result in the scenario file, to download and import as is on the other machines.',
+    referenceAide: 'On the reference PC only, all cores: adjusts the difficulty of each scenario so that the median challenge reaches dureeCibleMs (1 s), without changing the number of parts unless p90/p10 exceeds 2 over 30 control challenges, then freezes the result in the scenario file, to download and import as is on the other machines.',
     calibrerDifficultes: 'Calibrate difficulties on this machine',
     estimationAide: 'From reference durations, then from a speed measurement on this device. For each scenario: single challenges on all cores (latency), then maximum throughput (dureeDebitMs), then the verification bench (3 s per configuration, on 1 thread then on all cores). Each finished challenge is stored in this browser: after a crash, starting again resumes where the bench stopped (at most 3 attempts per scenario).',
     lancer: 'Start the bench',
@@ -190,7 +192,7 @@ const en: TextesBanc = {
     termine: 'Bench finished.',
     annule: 'Bench cancelled.',
     erreur: (message) => `Error: ${message}`,
-    colonnesResultats: ['Scenario', 'Status', 'Threads', 'Challenges', 'Median', 'Mean', 'p5', 'p10', 'p90', 'p95', 'Min', 'Max', 'p95/p5', 'Single challenges in 100 s', 'Maximum throughput (challenges in 100 s)', 'Attempts (mean)', 'Verification (median)', 'Size', 'Memory'],
+    colonnesResultats: ['Scenario', 'Status', 'Threads', 'Challenges', 'Median', 'Mean', 'p5', 'p10', 'p90', 'p95', 'Min', 'Max', 'p90/p10 (≤ 2 targeted)', 'p95/p5', 'Single challenges in 100 s', 'Maximum throughput (challenges in 100 s)', 'Attempts (mean)', 'Verification (median)', 'Size', 'Memory'],
     colonnesVerification: ['Algorithm', 'Parameters', 'Threads', 'Verifications/s'],
     nonRepresentatif: 'Quick mode: results are not representative.',
     importes: (nom) => `Scenarios imported from “${nom}”.`,
@@ -204,6 +206,7 @@ const en: TextesBanc = {
     difficultesCalibrees: (cible) => `Difficulties calibrated for a median of ${cible}: download the scenario file for the other machines.`,
     plafond: (retenus, demandes) => `${retenus} (memory cap, ${demandes} requested)`,
     statuts: { complet: 'complete', incomplet: 'incomplete', enCours: 'in progress', nonCommence: 'not started' },
+    auDessus: 'above target',
   },
 }
 

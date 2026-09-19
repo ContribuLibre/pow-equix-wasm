@@ -43,8 +43,13 @@ export type Scenario = {
   /** Ligne « sans parallélisation » du tableau : un seul fil, quel que soit `fils`. */
   sansParallelisation?: boolean
   repetitions: number
+  /**
+   * Difficulté plancher que le calibrage ne franchit pas (Equi-X n = 80 : un
+   * défi reste au-dessus de la cible plutôt que de perdre en régularité).
+   */
+  difficulteMin?: number
   /** Posé par le mode « calibrer » sur la machine de référence. */
-  calibrage?: { medianeMs: number; repetitions: number }
+  calibrage?: { medianeMs: number; repetitions: number; rapportP90P10?: number; partsInitiales?: number }
 } & (
   | { algorithme: 'sha256'; parametres: Record<string, never> }
   | { algorithme: 'argon2id'; parametres: ParametresArgon2id }
@@ -56,21 +61,36 @@ export const REPETITIONS_MIN = 100
 export const REPETITIONS_RAPIDE = 10
 
 /**
- * Scénarios PROVISOIRES : à remplacer par les valeurs arbitrées (durée cible,
- * parts, réglages). Argon2id a deux réglages de mémoire, comme deux colonnes :
- * sa mémoire se règle, comme celle d’Equi-X (n). Tous les cœurs par défaut ;
- * la difficulté est à fixer par le mode « calibrer » sur la machine de référence.
+ * Scénarios par défaut, arbitrés : défi visé ≈ 1 s (médiane, tous les cœurs,
+ * sur le PC de référence) et 80 % des défis dans un rapport ≤ 2 (p90/p10 ≤ 2).
+ * Parts et difficultés issues d’une simulation sur 8 cœurs avec distribution
+ * des compteurs à la demande ; le mode « calibrer » ajuste la difficulté sur le
+ * PC de référence, sans changer le nombre de parts sauf si p90/p10 dépasse 2.
+ * Argon2id a deux réglages de mémoire, comme deux colonnes : sa mémoire se
+ * règle, comme celle d’Equi-X (n).
  */
-export const SCENARIOS_PROVISOIRES: Scenario[] = [
-  { id: 'sha256-4x20', libelle: 'PROVISOIRE SHA-256, 4 parts', algorithme: 'sha256', parametres: {}, parts: 4, difficulte: 20, fils: 'coeurs', repetitions: REPETITIONS_MIN },
-  { id: 'argon2id-16m-4x1', libelle: 'PROVISOIRE Argon2id (mémoire réglable) : 16 Mio, t = 1, p = 1, 4 parts', algorithme: 'argon2id', parametres: { memoireKio: 16_384, iterations: 1, parallelisme: 1 }, parts: 4, difficulte: 3, fils: 'coeurs', repetitions: REPETITIONS_MIN },
-  { id: 'argon2id-64m-4x1', libelle: 'PROVISOIRE Argon2id (mémoire réglable) : 64 Mio, t = 1, p = 1, 4 parts', algorithme: 'argon2id', parametres: { memoireKio: 65_536, iterations: 1, parallelisme: 1 }, parts: 4, difficulte: 1, fils: 'coeurs', repetitions: REPETITIONS_MIN },
-  { id: 'equix-n60-4x4', libelle: 'PROVISOIRE Equi-X (mémoire réglable) : n = 60, 1,8 Mio, 4 parts', algorithme: 'equix', parametres: { n: 60, compilation: 'auto' }, parts: 4, difficulte: 4, fils: 'coeurs', repetitions: REPETITIONS_MIN },
-  { id: 'equix-n60-4x4-1fil', libelle: 'PROVISOIRE Equi-X n = 60, 4 parts, sans parallélisation', algorithme: 'equix', parametres: { n: 60, compilation: 'auto' }, parts: 4, difficulte: 4, sansParallelisation: true, repetitions: REPETITIONS_MIN },
+export const SCENARIOS_PAR_DEFAUT: Scenario[] = [
+  { id: 'sha256-13x19', libelle: 'SHA-256, 13 parts', algorithme: 'sha256', parametres: {}, parts: 13, difficulte: 19, fils: 'coeurs', repetitions: REPETITIONS_MIN },
+  { id: 'argon2id-16m-12x2', libelle: 'Argon2id (mémoire réglable) : 16 Mio, t = 1, p = 1, 12 parts', algorithme: 'argon2id', parametres: { memoireKio: 16_384, iterations: 1, parallelisme: 1 }, parts: 12, difficulte: 2, fils: 'coeurs', repetitions: REPETITIONS_MIN },
+  { id: 'argon2id-64m-5x1', libelle: 'Argon2id (mémoire réglable) : 64 Mio, t = 1, p = 1, 5 parts', algorithme: 'argon2id', parametres: { memoireKio: 65_536, iterations: 1, parallelisme: 1 }, parts: 5, difficulte: 1, fils: 'coeurs', repetitions: REPETITIONS_MIN },
+  { id: 'equix-n60-13x33', libelle: 'Equi-X (mémoire réglable) : n = 60, 1,8 Mio, 13 parts', algorithme: 'equix', parametres: { n: 60, compilation: 'auto' }, parts: 13, difficulte: 33, fils: 'coeurs', repetitions: REPETITIONS_MIN },
+  { id: 'equix-n72-7x7', libelle: 'Equi-X (mémoire réglable) : n = 72, 15 Mio, 7 parts', algorithme: 'equix', parametres: { n: 72, compilation: 'auto' }, parts: 7, difficulte: 7, fils: 'coeurs', repetitions: REPETITIONS_MIN },
+  {
+    id: 'equix-n80-3x2', libelle: 'Equi-X (mémoire réglable) : n = 80, 63 Mio, 3 parts (au-dessus de la cible : ≈ 1,3 s simulé)',
+    algorithme: 'equix', parametres: { n: 80, compilation: 'auto' }, parts: 3, difficulte: 2, difficulteMin: 2, fils: 'coeurs', repetitions: REPETITIONS_MIN,
+  },
 ]
 
-/** Durée cible (médiane) d’un défi, PROVISOIRE : visée par le mode « calibrer ». */
-export const DUREE_CIBLE_PROVISOIRE_MS = 1000
+/** Ancien nom, gardé pour les imports existants. */
+export const SCENARIOS_PROVISOIRES = SCENARIOS_PAR_DEFAUT
+
+/** Régularité visée : 80 % des défis dans un rapport ≤ 2, soit p90/p10 ≤ 2. */
+export const REGULARITE_MAX = 2
+
+/** Durée cible (médiane) d’un défi, arbitrée : ≈ 1 s sur le PC de référence, tous les cœurs. */
+export const DUREE_CIBLE_MS = 1000
+/** Ancien nom. */
+export const DUREE_CIBLE_PROVISOIRE_MS = DUREE_CIBLE_MS
 /** Durée de la mesure du débit maximal, PROVISOIRE (100 s pour une mesure directe de « défis en 100 s »). */
 export const DUREE_DEBIT_PROVISOIRE_MS = 30_000
 /** Durée de la mesure du débit maximal en mode rapide. */
@@ -98,7 +118,7 @@ export interface FichierScenarios {
 export const FORMAT_SCENARIOS = 'pow-equix-wasm/banc-scenarios'
 
 export function fichierProvisoire(): FichierScenarios {
-  return { format: FORMAT_SCENARIOS, version: 1, dureeCibleMs: DUREE_CIBLE_PROVISOIRE_MS, dureeDebitMs: DUREE_DEBIT_PROVISOIRE_MS, calibrage: null, scenarios: structuredClone(SCENARIOS_PROVISOIRES) }
+  return { format: FORMAT_SCENARIOS, version: 1, dureeCibleMs: DUREE_CIBLE_MS, dureeDebitMs: DUREE_DEBIT_PROVISOIRE_MS, calibrage: null, scenarios: structuredClone(SCENARIOS_PAR_DEFAUT) }
 }
 
 /** Durée d’une mesure de débit de vérification (par configuration et par nombre de fils). */
@@ -119,7 +139,7 @@ export function validerScenarios(valeur: unknown): { scenarios: Scenario[] } | E
     const ou = `scénario ${rang + 1}`
     if (typeof brut !== 'object' || brut === null) return { erreur: `${ou} : objet attendu` }
     const s = brut as Record<string, unknown>
-    const connus = ['id', 'libelle', 'algorithme', 'parametres', 'parts', 'difficulte', 'fils', 'sansParallelisation', 'repetitions', 'calibrage']
+    const connus = ['id', 'libelle', 'algorithme', 'parametres', 'parts', 'difficulte', 'difficulteMin', 'fils', 'sansParallelisation', 'repetitions', 'calibrage']
     const inconnu = Object.keys(s).find((cle) => !connus.includes(cle))
     if (inconnu) return { erreur: `${ou} : champ inconnu « ${inconnu} »` }
     if (typeof s.id !== 'string' || !/^[\w.-]{1,64}$/.test(s.id) || ids.has(s.id)) return { erreur: `${ou} : « id » unique attendu (lettres, chiffres, . _ -)` }
@@ -128,6 +148,7 @@ export function validerScenarios(valeur: unknown): { scenarios: Scenario[] } | E
     if (!ALGORITHMES.includes(s.algorithme as Algorithme)) return { erreur: `${ou} : « algorithme » parmi ${ALGORITHMES.join(', ')}` }
     if (!entier(s.parts, 1, PARTS_MAX)) return { erreur: `${ou} : « parts » entier de 1 à ${PARTS_MAX}` }
     if (!(s.fils === undefined || s.fils === 'coeurs' || entier(s.fils, 1, 64))) return { erreur: `${ou} : « fils » entier de 1 à 64 ou « coeurs »` }
+    if (s.difficulteMin !== undefined && !entier(s.difficulteMin, 0, EFFORT_MAX)) return { erreur: `${ou} : « difficulteMin » entier positif` }
     if (s.sansParallelisation !== undefined && typeof s.sansParallelisation !== 'boolean') return { erreur: `${ou} : « sansParallelisation » vrai ou faux` }
     if (s.calibrage !== undefined) {
       const c = s.calibrage as Record<string, unknown> | null
@@ -225,17 +246,24 @@ export function plafondFils(scenario: Scenario, coeurs: number, memoireAppareilG
  */
 export function difficultePourDuree(scenario: Scenario, cibleMs: number, msParEssai: number, fils: number): number {
   const essaisParPart = Math.max(1, cibleMs * fils / msParEssai / scenario.parts)
-  if (scenario.algorithme !== 'equix') return Math.min(scenario.algorithme === 'sha256' ? 40 : 20, Math.max(0, Math.round(Math.log2(essaisParPart))))
+  const plancher = scenario.difficulteMin ?? 0
+  if (scenario.algorithme !== 'equix') return Math.min(scenario.algorithme === 'sha256' ? 40 : 20, Math.max(plancher, Math.round(Math.log2(essaisParPart))))
   // probabiliteEssai(e) = 0,99 × (1 − e^(−2/e)) = 1 / essaisParPart.
   const p = Math.min(0.98, 1 / essaisParPart)
-  return Math.min(EFFORT_MAX, Math.max(1, Math.round(-2 / Math.log(1 - p / 0.99))))
+  return Math.min(EFFORT_MAX, Math.max(1, plancher, Math.round(-2 / Math.log(1 - p / 0.99))))
 }
 
 /** Ajuste une difficulté d’après la médiane mesurée : ± bits entiers (hashcash), effort proportionnel (Equi-X). */
 export function ajusterDifficulte(scenario: Scenario, medianeMs: number, cibleMs: number): number {
   const rapport = cibleMs / Math.max(1e-3, medianeMs)
-  if (scenario.algorithme === 'equix') return Math.min(EFFORT_MAX, Math.max(1, Math.round(scenario.difficulte * rapport)))
-  return Math.min(scenario.algorithme === 'sha256' ? 40 : 20, Math.max(0, scenario.difficulte + Math.round(Math.log2(rapport))))
+  const plancher = scenario.difficulteMin ?? 0
+  if (scenario.algorithme === 'equix') return Math.min(EFFORT_MAX, Math.max(1, plancher, Math.round(scenario.difficulte * rapport)))
+  return Math.min(scenario.algorithme === 'sha256' ? 40 : 20, Math.max(0, plancher, scenario.difficulte + Math.round(Math.log2(rapport))))
+}
+
+/** La médiane mesurée est-elle au-dessus de la cible (au-delà de la précision du réglage) ? */
+export function auDessusDeLaCible(scenario: Scenario, medianeMs: number, cibleMs: number): boolean {
+  return medianeMs > cibleMs * (scenario.algorithme === 'equix' ? 1.15 : Math.SQRT2)
 }
 
 /** Probabilité qu’un essai réussisse. */
@@ -288,7 +316,9 @@ export interface Statistiques {
   p95: number
   min: number
   max: number
-  /** Rapport p95 / p5 : 2 ou moins signifie que 90 % des défis durent « du simple au double » au plus. */
+  /** Rapport p90 / p10 : critère retenu, 2 ou moins = 80 % des défis « du simple au double » au plus. */
+  rapportP90P10: number
+  /** Rapport p95 / p5, pour information (90 % des défis). */
   rapportP95P5: number
 }
 
@@ -305,10 +335,12 @@ export function statistiques(valeurs: readonly number[]): Statistiques {
   const triees = [...valeurs].sort((a, b) => a - b)
   const moyenne = triees.reduce((somme, valeur) => somme + valeur, 0) / Math.max(1, triees.length)
   const p5 = centile(triees, 0.05)
+  const p10 = centile(triees, 0.1)
+  const p90 = centile(triees, 0.9)
   const p95 = centile(triees, 0.95)
   return {
-    nombre: triees.length, moyenne, mediane: centile(triees, 0.5), p5, p10: centile(triees, 0.1), p90: centile(triees, 0.9), p95,
-    min: triees[0] ?? Number.NaN, max: triees.at(-1) ?? Number.NaN, rapportP95P5: p95 / p5,
+    nombre: triees.length, moyenne, mediane: centile(triees, 0.5), p5, p10, p90, p95,
+    min: triees[0] ?? Number.NaN, max: triees.at(-1) ?? Number.NaN, rapportP90P10: p90 / p10, rapportP95P5: p95 / p5,
   }
 }
 
