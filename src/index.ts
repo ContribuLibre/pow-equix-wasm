@@ -238,6 +238,46 @@ export function webAssemblyDisponible(): boolean {
 }
 
 /**
+ * Durées des phases d’un essai, en millisecondes, mesurées là où il s’exécute
+ * (Web Worker ou fil courant), sans l’instanciation du module ni l’attente des messages.
+ */
+export interface PhasesEssai {
+  /** Programme HashX du défi et préparation de la mémoire (Rust). */
+  preparationMs: number
+  /** Génération des octets du module WebAssembly qui évalue le programme (0 si interprété). */
+  generationMs: number
+  /** Compilation et instanciation de ce module (0 si interprété). */
+  compilationMs: number
+  /** Table des valeurs HashX : programme compilé, ou interprète. */
+  remplissageMs: number
+  /** Recherche des collisions et règle d’effort (Rust). */
+  rechercheMs: number
+  /** Essai complet. */
+  totalMs: number
+}
+
+function phasesVides(): PhasesEssai {
+  return { preparationMs: 0, generationMs: 0, compilationMs: 0, remplissageMs: 0, rechercheMs: 0, totalMs: 0 }
+}
+
+/** Cumule les phases des essais et en donne la moyenne. */
+class CumulPhases {
+  private readonly somme = phasesVides()
+  private nombre = 0
+  ajouter(phases: PhasesEssai | null | undefined): void {
+    if (!phases) return
+    for (const cle of Object.keys(this.somme) as Array<keyof PhasesEssai>) this.somme[cle] += phases[cle] ?? 0
+    this.nombre++
+  }
+  moyenne(): PhasesEssai | null {
+    if (!this.nombre) return null
+    const moyenne = phasesVides()
+    for (const cle of Object.keys(moyenne) as Array<keyof PhasesEssai>) moyenne[cle] = this.somme[cle] / this.nombre
+    return moyenne
+  }
+}
+
+/**
  * Éléments remplis par appel au module compilé. Des appels courts laissent au
  * moteur WebAssembly le temps de remplacer le code de base par sa version
  * optimisée entre deux appels (V8 ne le fait qu’à l’entrée d’une fonction).
@@ -248,6 +288,7 @@ export const TRANCHE_REMPLISSAGE = 2048
 export class ModuleEquix {
   /** Faux dès qu’une compilation a échoué ici : l’interprète prend le relais. */
   private compilationPossible: boolean
+  private dernieresPhases: PhasesEssai | null = null
 
   private constructor(private readonly exports: ExportsEquix, readonly moteur: Moteur) {
     this.compilationPossible = moteur === 'wasm' && typeof WebAssembly === 'object' && exports.memory instanceof WebAssembly.Memory
@@ -332,12 +373,30 @@ export class ModuleEquix {
     if (!graineValide(graine) || !effortValide(effort) || !nValide(n)) throw new Error('Graine, effort ou n invalide.')
   }
 
+  /** Durées des phases du dernier essai, ou null avant tout essai. */
+  get phases(): PhasesEssai | null {
+    return this.dernieresPhases
+  }
+
   /** Un essai de résolution, HashX interprété : la solution retenue pour ce compteur, ou null. */
   essayer(graine: Uint8Array, compteur: number, effort: number, n: number = N_EQUIX): Uint8Array | null {
     this.controlerEssai(graine, effort, n)
+    const phases = phasesVides()
+    const debut = performance.now()
     this.tampon().set(graine, 0)
-    if (this.exports.essayer(graine.length, effort >>> 0, compteur >>> 0, n) !== 1) return null
-    return this.solution(n)
+    let trouve = false
+    if (this.exports.preparer(graine.length, compteur >>> 0, n) === 1) {
+      let instant = performance.now()
+      phases.preparationMs = instant - debut
+      this.exports.remplir()
+      phases.remplissageMs = performance.now() - instant
+      instant = performance.now()
+      trouve = this.exports.chercher(effort >>> 0) === 1
+      phases.rechercheMs = performance.now() - instant
+    } else phases.preparationMs = performance.now() - debut
+    phases.totalMs = performance.now() - debut
+    this.dernieresPhases = phases
+    return trouve ? this.solution(n) : null
   }
 
   /**
@@ -347,21 +406,39 @@ export class ModuleEquix {
   async essayerCompile(graine: Uint8Array, compteur: number, effort: number, n: number = N_EQUIX): Promise<Uint8Array | null> {
     if (!this.compilationPossible) return this.essayer(graine, compteur, effort, n)
     this.controlerEssai(graine, effort, n)
+    const phases = phasesVides()
+    const debut = performance.now()
     this.tampon().set(graine, 0)
-    if (this.exports.preparer(graine.length, compteur >>> 0, n) !== 1) return null
-    const zone = this.exports.zone_programme()
-    const description = this.tampon().slice(zone, zone + TAILLE_DESCRIPTION)
-    try {
-      const { instance } = await WebAssembly.instantiate(genererModuleHashx(description), { e: { m: this.exports.memory as WebAssembly.Memory } })
-      const remplir = instance.exports.remplir as (debut: number, fin: number) => void
-      const elements = new DataView(description.buffer).getUint32(4, true)
-      for (let debut = 0; debut < elements; debut += TRANCHE_REMPLISSAGE) remplir(debut, Math.min(elements, debut + TRANCHE_REMPLISSAGE))
-    } catch {
-      // Compilation refusée ou impossible ici : l’interprète termine l’essai, et les suivants.
-      this.compilationPossible = false
-      this.exports.remplir()
-    }
-    return this.exports.chercher(effort >>> 0) === 1 ? this.solution(n) : null
+    let trouve = false
+    if (this.exports.preparer(graine.length, compteur >>> 0, n) === 1) {
+      let instant = performance.now()
+      phases.preparationMs = instant - debut
+      const zone = this.exports.zone_programme()
+      const description = this.tampon().slice(zone, zone + TAILLE_DESCRIPTION)
+      try {
+        const octetsModule = genererModuleHashx(description)
+        phases.generationMs = performance.now() - instant
+        instant = performance.now()
+        const { instance } = await WebAssembly.instantiate(octetsModule, { e: { m: this.exports.memory as WebAssembly.Memory } })
+        phases.compilationMs = performance.now() - instant
+        instant = performance.now()
+        const remplir = instance.exports.remplir as (debut: number, fin: number) => void
+        const elements = new DataView(description.buffer).getUint32(4, true)
+        for (let element = 0; element < elements; element += TRANCHE_REMPLISSAGE) remplir(element, Math.min(elements, element + TRANCHE_REMPLISSAGE))
+      } catch {
+        // Compilation refusée ou impossible ici : l’interprète termine l’essai, et les suivants.
+        this.compilationPossible = false
+        instant = performance.now()
+        this.exports.remplir()
+      }
+      phases.remplissageMs = performance.now() - instant
+      instant = performance.now()
+      trouve = this.exports.chercher(effort >>> 0) === 1
+      phases.rechercheMs = performance.now() - instant
+    } else phases.preparationMs = performance.now() - debut
+    phases.totalMs = performance.now() - debut
+    this.dernieresPhases = phases
+    return trouve ? this.solution(n) : null
   }
 }
 
@@ -475,7 +552,7 @@ export type PolitiqueFils = (etat: EtatFils) => number
  * r = durée moyenne mesurée d’un essai / durée de référence pour ce n et cette exécution.
  */
 export const SEUILS_FILS_ADAPTATIFS = {
-  /** Au plus ce nombre de fils. */
+  /** Au plus ce nombre de fils quand la mémoire de l’appareil est inconnue (ou ses cœurs). */
   filsMax: 8,
   /** Part de la mémoire de l’appareil (`navigator.deviceMemory`) que le calcul peut occuper. */
   partMemoire: 1 / 32,
@@ -505,6 +582,11 @@ function memoireAppareilGo(): number | null {
   return typeof memoire === 'number' && memoire > 0 ? memoire : null
 }
 
+function coeursAnnonces(): number | null {
+  const coeurs = typeof navigator !== 'undefined' ? navigator.hardwareConcurrency : undefined
+  return Number.isInteger(coeurs) && coeurs! > 0 ? coeurs! : null
+}
+
 function ecranPx(): number | null {
   if (typeof screen === 'undefined' || !screen) return null
   const ratio = typeof devicePixelRatio === 'number' && devicePixelRatio > 0 ? devicePixelRatio : 1
@@ -518,24 +600,28 @@ function ecranPx(): number | null {
  * fil peut faire tuer l’onglet d’un téléphone sans erreur rattrapable.
  *
  * - Mémoire de l’appareil connue (`navigator.deviceMemory`) : d’emblée
- *   `floor(Go × 1024 × partMemoire / Mio par fil)`, au moins 1.
+ *   `floor(Go × 1024 × partMemoire / Mio par fil)`, au moins 1, au plus le
+ *   nombre de cœurs (`navigator.hardwareConcurrency`), qui peut dépasser 8 ;
+ *   `filsMax` ne s’applique alors que si les cœurs sont inconnus.
  * - Sinon, un fil jusqu’au premier essai ; puis, avec r = durée moyenne
  *   mesurée / durée de référence et l’écran en pixels physiques : appareil
  *   lent (r > 2,5) ou écran peu défini (< 1280 px) → 1 fil ; rapide (r < 1,3)
  *   et écran bien défini (≥ 1920 px) → `filsMax` ; entre les deux → 2 si
  *   r > 2, sinon 4. Un écran inconnu compte comme moyen.
- * - Toujours au plus `filsMax` (8) et le nombre de cœurs ; `resoudre` borne en
- *   plus aux essais restants attendus.
+ * - Sans mémoire connue : toujours au plus `filsMax` (8) et le nombre de
+ *   cœurs. `resoudre` borne en plus aux essais restants attendus (et à 64).
  */
 export function filsAdaptatifs(options: OptionsFilsAdaptatifs = {}): PolitiqueFils {
   const seuils = { ...SEUILS_FILS_ADAPTATIFS, ...Object.fromEntries(Object.entries(options).filter(([cle]) => cle in SEUILS_FILS_ADAPTATIFS)) } as Record<keyof typeof SEUILS_FILS_ADAPTATIFS, number>
   return (etat) => {
-    const coeurs = options.coeurs ?? filsParDefaut(64)
-    const plafond = Math.max(1, Math.min(seuils.filsMax, coeurs))
+    const coeurs = options.coeurs ?? coeursAnnonces()
+    const plafond = Math.max(1, Math.min(seuils.filsMax, coeurs ?? seuils.filsMax))
     const memoire = options.memoireAppareilGo === undefined ? memoireAppareilGo() : options.memoireAppareilGo
     if (memoire !== null) {
       const mioParFil = memoirePourN(etat.n) / 1024 / 1024
-      return Math.max(1, Math.min(plafond, Math.floor(memoire * 1024 * seuils.partMemoire / mioParFil)))
+      const plafondMemoire = Math.floor(memoire * 1024 * seuils.partMemoire / mioParFil)
+      // Caractéristiques matérielles connues : autant de fils que de cœurs, si la mémoire le permet.
+      return Math.max(1, Math.min(coeurs ?? seuils.filsMax, plafondMemoire))
     }
     if (etat.dureeMoyenneEssaiMs === null) return 1
     const rapport = etat.dureeMoyenneEssaiMs / msParEssai(etat.execution, etat.n)
@@ -554,6 +640,25 @@ export function estimerDuree(options: { effort: number; nombre: number; executio
   const essais = essaisAttendus(options.effort, options.nombre)
   const fils = Math.max(1, Math.min(options.fils ?? filsConseilles(options.effort, options.nombre), essais))
   return essais * msParEssai(options.execution, options.n) / fils
+}
+
+/**
+ * Seuil de durée d’un essai JavaScript (n = 60) séparant « avec JIT » de « sans
+ * JIT » : la moyenne géométrique des deux références (≈ 17 s), soit un facteur
+ * ≈ 4,5 de marge de chaque côté. Multiplié par `FACTEUR_DUREE_N` pour les autres n.
+ */
+export const SEUIL_JIT_MS = Math.round(Math.sqrt(REFERENCE_MS_PAR_ESSAI.js * REFERENCE_MS_PAR_ESSAI.jsSansJit))
+
+/**
+ * Exécution effective d’après ce qu’on a observé. En moteur JavaScript, la
+ * présence du JIT n’est pas observable directement : elle est **estimée** à
+ * partir de la durée moyenne d’un essai, comparée à `SEUIL_JIT_MS`.
+ */
+export function executionEstimee(observation: { moteur: Moteur; compilation: boolean; n?: number; dureeEssaiMs: number | null }): Execution {
+  if (observation.moteur === 'wasm') return observation.compilation ? 'wasmCompile' : 'wasm'
+  const n = observation.n ?? N_EQUIX
+  if (observation.dureeEssaiMs === null) return webAssemblyDisponible() ? 'js' : 'jsSansJit'
+  return observation.dureeEssaiMs < SEUIL_JIT_MS * FACTEUR_DUREE_N[n as (typeof N_VALIDES)[number]] ? 'js' : 'jsSansJit'
 }
 
 /**
@@ -586,6 +691,8 @@ export interface Progression {
   n: number
   /** Web Workers en service ; 0 sur le fil courant. */
   filsActifs: number
+  /** Durées moyennes des phases d’un essai sur un fil, ou null avant le premier essai. */
+  phasesMoyennes: PhasesEssai | null
   /** Essais cumulés, tous fils confondus (depuis le début du moteur en cours). */
   essais: number
   /** Parts trouvées, au plus `nombre`. */
@@ -657,6 +764,8 @@ export interface Resolution {
   n: number
   /** Plus grand nombre de Web Workers en service à la fois ; 0 pour le fil courant. */
   fils: number
+  /** Durées moyennes des phases d’un essai sur un fil (génération et compilation du module HashX, table, recherche). */
+  phasesMoyennes: PhasesEssai | null
   dureeMs: number
   /** Mémoire maximale des modules cumulée sur tous les fils, en octets. */
   memoireOctets: number
@@ -697,7 +806,6 @@ function corpsTravailleur(): void {
     tampon_adresse(): number
     tampon_taille(): number
     zone_programme(): number
-    essayer(longueur: number, effort: number, compteur: number, n: number): number
     preparer(longueur: number, compteur: number, n: number): number
     remplir(): void
     chercher(effort: number): number
@@ -720,30 +828,45 @@ function corpsTravailleur(): void {
     const { graine, effort, graineMax, n, tailleDescription, tranche } = reglage!
     const module = exports!
     const tampon = (): Uint8Array => new Uint8Array(module.memory.buffer, module.tampon_adresse(), module.tampon_taille())
-    // Durée de calcul de l’essai seul : compilation du programme HashX comprise,
-    // sans l’instanciation du module ni l’attente des messages.
+    // Durée de calcul de l’essai seul, phase par phase : compilation du programme
+    // HashX comprise, sans l’instanciation du module ni l’attente des messages.
+    const phases = { preparationMs: 0, generationMs: 0, compilationMs: 0, remplissageMs: 0, rechercheMs: 0, totalMs: 0 }
     const debut = performance.now()
     tampon().set(graine)
-    let trouve: boolean
-    if (!compilation) trouve = module.essayer(graine.length, effort, compteur, n) === 1
-    else if (module.preparer(graine.length, compteur, n) !== 1) trouve = false
-    else {
-      const zone = module.zone_programme()
-      const description = tampon().slice(zone, zone + tailleDescription)
-      try {
-        const { instance } = await WebAssembly.instantiate(portee.genererModuleHashx!(description), { e: { m: module.memory as WebAssembly.Memory } })
-        const remplir = instance.exports.remplir as (debut: number, fin: number) => void
-        const elements = new DataView(description.buffer).getUint32(4, true)
-        for (let element = 0; element < elements; element += tranche) remplir(element, Math.min(elements, element + tranche))
-      } catch {
-        compilation = false
-        module.remplir()
+    let trouve = false
+    if (module.preparer(graine.length, compteur, n) === 1) {
+      let instant = performance.now()
+      phases.preparationMs = instant - debut
+      let rempli = false
+      if (compilation) {
+        try {
+          const zone = module.zone_programme()
+          const description = tampon().slice(zone, zone + tailleDescription)
+          const octetsModule = portee.genererModuleHashx!(description)
+          phases.generationMs = performance.now() - instant
+          instant = performance.now()
+          const { instance } = await WebAssembly.instantiate(octetsModule, { e: { m: module.memory as WebAssembly.Memory } })
+          phases.compilationMs = performance.now() - instant
+          instant = performance.now()
+          const remplir = instance.exports.remplir as (debut: number, fin: number) => void
+          const elements = new DataView(description.buffer).getUint32(4, true)
+          for (let element = 0; element < elements; element += tranche) remplir(element, Math.min(elements, element + tranche))
+          rempli = true
+        } catch {
+          compilation = false
+          instant = performance.now()
+        }
       }
+      if (!rempli) module.remplir()
+      phases.remplissageMs = performance.now() - instant
+      instant = performance.now()
       trouve = module.chercher(effort) === 1
-    }
+      phases.rechercheMs = performance.now() - instant
+    } else phases.preparationMs = performance.now() - debut
     const dureeMs = performance.now() - debut
+    phases.totalMs = dureeMs
     const solution = trouve ? tampon().slice(graineMax, graineMax + n / 4 + 1) : null
-    portee.postMessage({ type: 'essai', compteur, solution, memoire: module.memory.buffer.byteLength, compilation, dureeMs })
+    portee.postMessage({ type: 'essai', compteur, solution, memoire: module.memory.buffer.byteLength, compilation, dureeMs, phases })
   }
   // Messages : `{ reglage, compteur }` d’abord, puis `{ compteur }` à chaque essai demandé
   // par le fil principal, qui distribue les compteurs un par un.
@@ -868,19 +991,21 @@ async function resoudreSurCeFil(options: OptionsResolution, moteur: Moteur, js: 
   const debut = performance.now()
   let essais = 0
   let toujoursCompile = compiler && module.compilation
+  const cumul = new CumulPhases()
   for (let compteur = 0; trouvees.size < nombre; compteur++) {
     signal?.throwIfAborted()
     const solution = compiler ? await module.essayerCompile(graine, compteur, effort, n) : module.essayer(graine, compteur, effort, n)
     const compilation = compiler && module.compilation
     toujoursCompile &&= compilation
+    cumul.ajouter(module.phases)
     essais++
     if (solution) trouvees.set(compteur, solution)
     const dureeMs = performance.now() - debut
-    onProgression?.({ moteur, compilation, repli, n, filsActifs: 0, essais, parts: trouvees.size, dureeMs, restantEstimeMs: restantEstime(essais, trouvees.size, nombre, effort, dureeMs), memoireOctets: module.memoireOctets })
+    onProgression?.({ moteur, compilation, repli, n, filsActifs: 0, phasesMoyennes: cumul.moyenne(), essais, parts: trouvees.size, dureeMs, restantEstimeMs: restantEstime(essais, trouvees.size, nombre, effort, dureeMs), memoireOctets: module.memoireOctets })
     if (trouvees.size < nombre) await new Promise<void>((resolve) => setTimeout(resolve, 0))
   }
   signal?.throwIfAborted()
-  return { parts: assembler(trouvees, nombre), essais, moteur, compilation: toujoursCompile, repli, n, fils: 0, dureeMs: performance.now() - debut, memoireOctets: module.memoireOctets }
+  return { parts: assembler(trouvees, nombre), essais, moteur, compilation: toujoursCompile, repli, n, fils: 0, phasesMoyennes: cumul.moyenne(), dureeMs: performance.now() - debut, memoireOctets: module.memoireOctets }
 }
 
 /**
@@ -905,6 +1030,7 @@ function resoudreEnParallele(options: OptionsResolution, moteur: Moteur, js: Cre
     let prochain = 0
     let essais = 0
     /** Durées de calcul : premiers essais de chaque fil (mise en température du JIT) à part. */
+    const cumul = new CumulPhases()
     let cumulPremiers = 0
     let premiers = 0
     let cumulSuivants = 0
@@ -968,13 +1094,14 @@ function resoudreEnParallele(options: OptionsResolution, moteur: Moteur, js: Cre
       }
       travailleur.onmessage = (evenement: MessageEvent) => {
         if (fini || !fil.vivant) return
-        const message = evenement.data as { type: string; compteur?: number; solution?: Uint8Array | null; memoire?: number; compilation?: boolean; dureeMs?: number; message?: string }
+        const message = evenement.data as { type: string; compteur?: number; solution?: Uint8Array | null; memoire?: number; compilation?: boolean; dureeMs?: number; phases?: PhasesEssai; message?: string }
         if (message.type === 'erreur') return perdre(fil, message.message ?? 'Erreur du Web Worker Equi-X.')
         const maintenant = performance.now()
         // Durée de calcul mesurée par le Web Worker ; à défaut (fabrique remplacée), l’aller-retour.
         const duree = typeof message.dureeMs === 'number' ? message.dureeMs : maintenant - fil.debutEssai
         essais++
         fil.resultats++
+        cumul.ajouter(message.phases)
         if (fil.resultats === 1) {
           cumulPremiers += duree
           premiers++
@@ -993,8 +1120,8 @@ function resoudreEnParallele(options: OptionsResolution, moteur: Moteur, js: Cre
         const dureeMs = maintenant - debut
         if (trouvees.size >= nombre) {
           terminer()
-          onProgression?.({ moteur, compilation, repli, n, filsActifs: actifs().length, essais, parts, dureeMs, restantEstimeMs: 0, memoireOctets: memoire })
-          resolve({ parts: assembler(trouvees, nombre), essais, moteur, compilation: toujoursCompile, repli, n, fils: filsMax, dureeMs, memoireOctets: memoireMax })
+          onProgression?.({ moteur, compilation, repli, n, filsActifs: actifs().length, phasesMoyennes: cumul.moyenne(), essais, parts, dureeMs, restantEstimeMs: 0, memoireOctets: memoire })
+          resolve({ parts: assembler(trouvees, nombre), essais, moteur, compilation: toujoursCompile, repli, n, fils: filsMax, phasesMoyennes: cumul.moyenne(), dureeMs, memoireOctets: memoireMax })
           return
         }
         try {
@@ -1003,7 +1130,7 @@ function resoudreEnParallele(options: OptionsResolution, moteur: Moteur, js: Cre
         } catch (erreur) {
           return echouer(erreur instanceof Error ? erreur.message : String(erreur))
         }
-        onProgression?.({ moteur, compilation, repli, n, filsActifs: actifs().length, essais, parts, dureeMs, restantEstimeMs: restantEstime(essais, parts, nombre, effort, dureeMs), memoireOctets: memoire })
+        onProgression?.({ moteur, compilation, repli, n, filsActifs: actifs().length, phasesMoyennes: cumul.moyenne(), essais, parts, dureeMs, restantEstimeMs: restantEstime(essais, parts, nombre, effort, dureeMs), memoireOctets: memoire })
       }
       const octets = moteur === 'wasm' ? options.octets!.slice().buffer : undefined
       confier(fil, { reglage: { octets, graine, effort, graineMax: GRAINE_MAX, n, compiler, tailleDescription: TAILLE_DESCRIPTION, tranche: TRANCHE_REMPLISSAGE } })

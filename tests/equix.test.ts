@@ -8,7 +8,7 @@ import { resolve } from 'node:path'
 import {
   ECART_MAX, GRAINE_MAX, ModuleEquix, N_VALIDES, REFERENCE_MS_PAR_ESSAI, VERSION_FORMAT, construireGraine, depuisHexadecimal, encoderPreuve, essaisAttendus, estimerDuree,
   executionPrevue, genererModuleHashx, hexadecimal, memoirePourN, moteurRetenu, msParEssai, nPourMemoire, probabiliteEssai, ralentissement, resoudre,
-  SEUILS_FILS_ADAPTATIFS, type EtatFils, filsAdaptatifs, tailleMaxPreuve, taillePreuve, tailleSolution, travailleurEquix, webAssemblyDisponible,
+  SEUILS_FILS_ADAPTATIFS, SEUIL_JIT_MS, type EtatFils, executionEstimee, filsAdaptatifs, tailleMaxPreuve, taillePreuve, tailleSolution, travailleurEquix, webAssemblyDisponible,
 } from '../dist/index.js'
 import { creerExportsEquixJs } from '../dist/equix-js.js'
 import { SHA256_EQUIX, octetsEquix } from '../dist/octets.js'
@@ -206,6 +206,43 @@ describe('chargement paresseux du moteur JavaScript', () => {
     }
     expect(appels).toBe(0)
   }, 60_000)
+})
+
+describe('phases d’un essai', () => {
+  test('chaque essai mesure ses phases, compilé ou interprété, sur le fil courant comme dans les Web Workers', async () => {
+    for (const [compilation, fils] of [['auto', 0], ['auto', 2], ['jamais', 0], ['jamais', 1]] as const) {
+      const vues: Array<number | undefined> = []
+      const resultat = await resoudre({ octets, graine, effort: 1, nombre: 2, fils, compilation, onProgression: ({ phasesMoyennes }) => vues.push(phasesMoyennes?.totalMs) })
+      const phases = resultat.phasesMoyennes!
+      expect(vues.every((total) => total !== undefined && total > 0)).toBe(true)
+      const somme = phases.preparationMs + phases.generationMs + phases.compilationMs + phases.remplissageMs + phases.rechercheMs
+      expect(somme).toBeLessThanOrEqual(phases.totalMs + 0.01)
+      expect(somme).toBeGreaterThan(phases.totalMs * 0.8)
+      expect(phases.remplissageMs).toBeGreaterThan(0)
+      expect(phases.rechercheMs).toBeGreaterThan(0)
+      if (compilation === 'jamais') expect(phases.generationMs + phases.compilationMs).toBe(0)
+      else expect(phases.generationMs + phases.compilationMs).toBeGreaterThan(0)
+    }
+    const module = await ModuleEquix.instancier(octets)
+    expect(module.phases).toBeNull()
+    await module.essayerCompile(graine, 0, 1)
+    expect(module.phases!.compilationMs).toBeGreaterThan(0)
+    module.essayer(graine, 0, 1)
+    expect(module.phases!.compilationMs).toBe(0)
+    expect(ModuleEquix.depuisJs(creerExportsEquixJs).phases).toBeNull()
+  }, 120_000)
+
+  test('l’exécution effective est déduite, et le JIT estimé d’après la vitesse', () => {
+    expect(executionEstimee({ moteur: 'wasm', compilation: true, dureeEssaiMs: 40 })).toBe('wasmCompile')
+    expect(executionEstimee({ moteur: 'wasm', compilation: false, dureeEssaiMs: 400 })).toBe('wasm')
+    expect(SEUIL_JIT_MS).toBeGreaterThan(REFERENCE_MS_PAR_ESSAI.js * 3)
+    expect(SEUIL_JIT_MS).toBeLessThan(REFERENCE_MS_PAR_ESSAI.jsSansJit / 3)
+    expect(executionEstimee({ moteur: 'js', compilation: false, dureeEssaiMs: 1_500 })).toBe('js')
+    expect(executionEstimee({ moteur: 'js', compilation: false, dureeEssaiMs: 76_000 })).toBe('jsSansJit')
+    // Le seuil suit n : 20 s par essai est rapide à n = 72, lent à n = 60.
+    expect(executionEstimee({ moteur: 'js', compilation: false, n: 72, dureeEssaiMs: 20_000 })).toBe('js')
+    expect(executionEstimee({ moteur: 'js', compilation: false, n: 60, dureeEssaiMs: 20_000 })).toBe('jsSansJit')
+  })
 })
 
 describe('forme compacte des preuves', () => {
@@ -585,7 +622,13 @@ describe('fils adaptatifs', () => {
     expect(filsAdaptatifs({ memoireAppareilGo: 4, coeurs: 8 })(etat({ n: 80 }))).toBe(2)
     expect(filsAdaptatifs({ memoireAppareilGo: 1, coeurs: 4 })(etat({}))).toBe(4)
     expect(filsAdaptatifs({ memoireAppareilGo: 0.5, coeurs: 8 })(etat({ n: 76 }))).toBe(1)
-    expect(filsAdaptatifs({ memoireAppareilGo: 8, coeurs: 16, filsMax: 12 })(etat({}))).toBe(12)
+    // Caractéristiques connues : au-delà de 8, jusqu’aux cœurs si la mémoire le permet.
+    expect(filsAdaptatifs({ memoireAppareilGo: 16, coeurs: 16 })(etat({}))).toBe(16)
+    expect(filsAdaptatifs({ memoireAppareilGo: 32, coeurs: 24 })(etat({ n: 68 }))).toBe(24)
+    expect(filsAdaptatifs({ memoireAppareilGo: 8, coeurs: 32 })(etat({ n: 72 }))).toBe(16)
+    // filsMax ne borne alors que si les cœurs sont inconnus, et toujours l’heuristique sans mémoire.
+    expect(filsAdaptatifs({ memoireAppareilGo: 8, coeurs: 16, filsMax: 12 })(etat({}))).toBe(16)
+    expect(filsAdaptatifs({ memoireAppareilGo: null, ecranPx: 2560, coeurs: 16 })(etat({ dureeMoyenneEssaiMs: 30 }))).toBe(8)
   })
 
   test('filsAdaptatifs : sans mémoire connue, d’après la durée mesurée et l’écran', () => {
