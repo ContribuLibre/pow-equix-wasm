@@ -6,9 +6,9 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import {
-  GRAINE_MAX, ModuleEquix, N_VALIDES, REFERENCE_MS_PAR_ESSAI, TAILLE_PART, VERSION_FORMAT, construireGraine, depuisHexadecimal, essaisAttendus, estimerDuree,
+  ECART_MAX, GRAINE_MAX, ModuleEquix, N_VALIDES, REFERENCE_MS_PAR_ESSAI, VERSION_FORMAT, construireGraine, depuisHexadecimal, encoderPreuve, essaisAttendus, estimerDuree,
   executionPrevue, genererModuleHashx, hexadecimal, memoirePourN, moteurRetenu, msParEssai, nPourMemoire, probabiliteEssai, ralentissement, resoudre,
-  taillePart, webAssemblyDisponible,
+  tailleMaxPreuve, taillePreuve, tailleSolution, webAssemblyDisponible,
 } from '../dist/index.js'
 import { creerExportsEquixJs } from '../dist/equix-js.js'
 import { SHA256_EQUIX, octetsEquix } from '../dist/octets.js'
@@ -62,8 +62,10 @@ describe('résolution et vérification', () => {
     const { parts, essais, fils } = await resoudre({ octets, graine, effort: 2, nombre: 3, fils: 0 })
     expect(fils).toBe(0)
     expect(essais).toBeGreaterThanOrEqual(3)
-    expect(parts.length).toBe(3 * TAILLE_PART)
     const module = await ModuleEquix.instancier(octets)
+    const compteurs = module.compteurs(parts, 3)!
+    expect(parts.length).toBe(taillePreuve(compteurs))
+    expect(parts.length).toBeLessThanOrEqual(tailleMaxPreuve(60, 3))
     expect(module.verifier(graine, parts, 2, 3)).toBe(true)
     expect(module.verifier(await construireGraine('pow-equix-wasm/test', 'autre contenu'), parts, 2, 3)).toBe(false)
     expect(module.verifier(graine, parts, 2, 2)).toBe(false)
@@ -107,18 +109,88 @@ describe('résolution et vérification', () => {
     await expect(module.essayerCompile(graine, 0, 0, 60)).rejects.toThrow('Graine, effort ou n invalide.')
   })
 
-  test('les preuves produites par la version 0.2.1 restent valides (n = 60)', async () => {
-    // Graine et preuve (effort 3, 3 parts) calculées avec pow-equix-wasm 0.2.1.
+  test('rupture avec la 0.2.1 : même solution Equi-X, mais l’ancienne enveloppe est refusée', async () => {
+    // Graine et preuve (effort 3, 3 parts de 20 octets : compteur u32 ‖ solution) calculées avec pow-equix-wasm 0.2.1.
     const graine021 = depuisHexadecimal('706f772d65717569782d7761736d2f7465737400ff0f3a964c682be5f7fe39de98fa2379ef5226b6692cea9ded960a191e57c4e5')!
-    const preuve = depuisHexadecimal('0200000050a07aa6c610eaf09915b1f0c02daff403000000405c00a63fa969ae8ccbdae2b51175e4060000009b5cbd7d66a0ceb622731b94090a0cf9')!
+    const ancienne = depuisHexadecimal('0200000050a07aa6c610eaf09915b1f0c02daff403000000405c00a63fa969ae8ccbdae2b51175e4060000009b5cbd7d66a0ceb622731b94090a0cf9')!
     expect(graine021).toEqual(await construireGraine('pow-equix-wasm/test', '{"version":"0.2.1"}'))
     expect(VERSION_FORMAT).toBe(2)
+    const vue = new DataView(ancienne.buffer)
+    const parts = [0, 1, 2].map((index) => ({ compteur: vue.getUint32(index * 20, true), solution: ancienne.slice(index * 20 + 4, index * 20 + 20) }))
+    expect(parts.map((part) => part.compteur)).toEqual([2, 3, 6])
+    // Les mêmes solutions dans la nouvelle enveloppe : écarts 2, 0, 2 d’un octet, 51 octets au lieu de 60.
+    const nouvelle = encoderPreuve(parts)
+    expect(nouvelle.length).toBe(3 * 17)
+    expect([nouvelle[0], nouvelle[17], nouvelle[34]]).toEqual([2, 0, 2])
     for (const module of [await ModuleEquix.instancier(octets), ModuleEquix.depuisJs(creerExportsEquixJs)]) {
-      expect(module.verifier(graine021, preuve, 3, 3)).toBe(true)
-      expect(module.verifier(graine021, preuve, 3, 3, 60)).toBe(true)
-      expect(module.verifier(graine021, preuve, 3, 3, 64)).toBe(false)
+      expect(module.verifier(graine021, ancienne, 3, 3)).toBe(false)
+      expect(module.verifier(graine021, nouvelle, 3, 3)).toBe(true)
+      expect(module.verifier(graine021, nouvelle, 3, 3, 64)).toBe(false)
     }
   })
+})
+
+describe('forme compacte des preuves', () => {
+  const solution = new Uint8Array(16).fill(0xab)
+  const listes = [[0], [0, 1, 2], [127, 128, 16_383, 16_384], [2 ** 21 - 1, 2 ** 21, 2 ** 28, 0xffff_fffe, 0xffff_ffff], [0xffff_ffff]]
+
+  test('l’encodeur TypeScript fait l’aller-retour avec le décodeur du module, en WebAssembly comme en JavaScript', async () => {
+    for (const module of [await ModuleEquix.instancier(octets), ModuleEquix.depuisJs(creerExportsEquixJs)]) {
+      for (const compteurs of listes) {
+        const preuve = encoderPreuve(compteurs.map((compteur) => ({ compteur, solution })))
+        expect(preuve.length).toBe(taillePreuve(compteurs))
+        expect(preuve.length).toBeLessThanOrEqual(tailleMaxPreuve(60, compteurs.length))
+        expect(module.compteurs(preuve, compteurs.length)).toEqual(compteurs)
+        expect(module.compteurs(preuve, compteurs.length + 1)).toBeNull()
+      }
+    }
+    // Écarts de 1 à 5 octets.
+    expect(taillePreuve([127])).toBe(1 + 16)
+    expect(taillePreuve([128])).toBe(2 + 16)
+    expect(taillePreuve([0xffff_ffff])).toBe(ECART_MAX + 16)
+    expect(taillePreuve([0, 1, 2], 80)).toBe(3 * (1 + 21))
+  })
+
+  test('toute autre forme d’octets est refusée : LEB128 non canonique, dépassement, octets en trop ou manquants', async () => {
+    const module = await ModuleEquix.instancier(octets)
+    const preuve = (...ecarts: number[][]): Uint8Array => new Uint8Array(ecarts.flatMap((ecart) => [...ecart, ...solution]))
+    expect(module.compteurs(preuve([0x7f], [0x00]), 2)).toEqual([127, 128])
+    expect(module.compteurs(preuve([0xff, 0xff, 0xff, 0xff, 0x0f]), 1)).toEqual([0xffff_ffff])
+    for (const [description, forme, nombre] of [
+      ['zéro de tête', preuve([0x80, 0x00]), 1],
+      ['octet final nul', preuve([0x81, 0x80, 0x00]), 1],
+      ['plus de 5 octets', preuve([0x80, 0x80, 0x80, 0x80, 0x80, 0x01]), 1],
+      ['au-delà de u32', preuve([0xff, 0xff, 0xff, 0xff, 0x10]), 1],
+      ['compteur cumulé au-delà de u32', preuve([0xff, 0xff, 0xff, 0xff, 0x0f], [0x00]), 2],
+      ['octet en trop', new Uint8Array([...preuve([0x03]), 0]), 1],
+      ['octet manquant', preuve([0x03]).slice(0, 16), 1],
+      ['parts en trop', preuve([0x03], [0x00]), 1],
+      ['preuve vide', new Uint8Array(0), 1],
+      ['aucune part', new Uint8Array(0), 0],
+    ] as const) {
+      expect([description, module.compteurs(forme, nombre)]).toEqual([description, null])
+      expect([description, module.verifier(graine, forme, 1, nombre)]).toEqual([description, false])
+    }
+    // Une entrée plus longue que la taille maximale est refusée avant tout calcul.
+    expect(tailleMaxPreuve(60, 4)).toBe(4 * 21)
+    expect(tailleMaxPreuve(80, 4)).toBe(4 * 26)
+    expect(tailleMaxPreuve(62, 4)).toBe(0)
+    expect(tailleMaxPreuve(60, 65)).toBe(0)
+    expect(module.verifier(graine, new Uint8Array(tailleMaxPreuve(60, 4) + 1), 1, 4)).toBe(false)
+    // L’encodeur exige des compteurs strictement croissants, dans u32.
+    expect(() => encoderPreuve([{ compteur: 4, solution }, { compteur: 4, solution }])).toThrow('Compteurs invalides')
+    expect(() => encoderPreuve([{ compteur: 2 ** 32, solution }])).toThrow('Compteurs invalides')
+  })
+
+  test('tailles typiques : 4 parts à l’effort 1', async () => {
+    for (const n of [60, 80]) {
+      const { parts } = await resoudre({ octets, graine, effort: 1, nombre: 4, fils: 0, n })
+      // Compteurs < 128 : un octet d’écart par part.
+      expect(parts.length).toBe(4 * (1 + tailleSolution(n)))
+    }
+    expect(tailleSolution(60)).toBe(16)
+    expect(tailleSolution(80)).toBe(21)
+  }, 120_000)
 })
 
 describe('mémoire réglable (n)', () => {
@@ -134,22 +206,22 @@ describe('mémoire réglable (n)', () => {
     expect(nPourMemoire(4)).toBe(64)
     expect(nPourMemoire(16)).toBe(72)
     expect(nPourMemoire(1000)).toBe(80)
-    expect(taillePart()).toBe(TAILLE_PART)
-    expect(taillePart(64)).toBe(36)
+    expect(tailleSolution()).toBe(16)
+    expect(tailleSolution(64)).toBe(17)
   })
 
   test('une preuve à n = 64 se résout, se vérifie, et n’est valable que pour ce n', async () => {
     const resultat = await resoudre({ octets, graine, effort: 2, nombre: 2, fils: 0, n: 64 })
     expect(resultat.n).toBe(64)
     expect(resultat.compilation).toBe(true)
-    expect(resultat.parts.length).toBe(2 * 36)
     const module = await ModuleEquix.instancier(octets)
+    expect(resultat.parts.length).toBe(taillePreuve(module.compteurs(resultat.parts, 2, 64)!, 64))
     expect(module.verifier(graine, resultat.parts, 2, 2, 64)).toBe(true)
     expect(ModuleEquix.depuisJs(creerExportsEquixJs).verifier(graine, resultat.parts, 2, 2, 64)).toBe(true)
     expect(module.verifier(graine, resultat.parts, 2, 2, 68)).toBe(false)
     expect(module.verifier(graine, resultat.parts, 2, 2)).toBe(false)
-    expect(module.verifier(graine, resultat.parts.slice(0, 40), 2, 2, 64)).toBe(false)
-    for (const octet of [0, 4, 20, 35, 40]) {
+    expect(module.verifier(graine, resultat.parts.slice(0, -1), 2, 2, 64)).toBe(false)
+    for (const octet of [0, 4, 17, 20, resultat.parts.length - 1]) {
       const alteree = resultat.parts.slice()
       alteree[octet]! ^= 0x08
       expect(module.verifier(graine, alteree, 2, 2, 64)).toBe(false)

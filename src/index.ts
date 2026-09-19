@@ -17,22 +17,28 @@
  * module WebAssembly (`compilation.ts`), bien plus rapide que l’interprète.
  *
  * Protocole : le défi d’un essai est `graine ‖ compteur` (u32 petit-boutiste).
- * Une preuve réunit `nombre` parts, `compteur ‖ solution`, aux compteurs
- * strictement croissants ; chaque solution doit passer la règle d’effort de Tor
+ * Une preuve réunit `nombre` parts aux compteurs strictement croissants, chacune
+ * `écart de compteur (LEB128) ‖ solution rangée bit à bit`, sous une forme
+ * d’octets unique ; chaque solution doit passer la règle d’effort de Tor
  * (`hs_pow`). Le paramètre `n` règle la mémoire : Equihash(n, 3) sur HashX,
- * n = 60 étant exactement Equi-X (parts de 20 octets, format de la 0.2). Voir README.md.
+ * n = 60 étant exactement Equi-X (même solution de 16 octets). Voir README.md.
  */
 
 import { TAILLE_DESCRIPTION, genererModuleHashx } from './compilation.js'
 
 export { genererModuleHashx } from './compilation.js'
 
-/** Version du format : 2 depuis l’ajout de n (les preuves n = 60 de la version 1 restent valides). */
+/**
+ * Version du format : 2 depuis l’ajout de n et de la forme compacte des preuves.
+ * Rupture avec la 0.2 (parts de 20 octets à compteur u32) : un chargeur 0.2
+ * refuse ce module, et ses preuves ne sont plus acceptées.
+ */
 export const VERSION_FORMAT = 2
 export const GRAINE_MAX = 256
-/** Taille d’une solution et d’une part pour n = 60 (Equi-X) ; voir `tailleSolution` et `taillePart`. */
+/** Taille d’une solution pour n = 60 (Equi-X) ; voir `tailleSolution`. */
 export const TAILLE_SOLUTION = 16
-export const TAILLE_PART = 4 + TAILLE_SOLUTION
+/** Octets au plus d’un écart de compteur (LEB128 d’un u32). */
+export const ECART_MAX = 5
 export const PARTS_MAX = 64
 /** Au-delà, l’effort n’a plus de sens : une chance sur 2³² par solution. */
 export const EFFORT_MAX = 2 ** 32 - 1
@@ -49,14 +55,64 @@ export function nValide(n: number): boolean {
   return (N_VALIDES as readonly number[]).includes(n)
 }
 
-/** Octets d’une solution : 8 indices sur 16 bits pour n = 60, sur 32 bits au-delà. */
+/**
+ * Octets d’une solution rangée : 8 indices de n/4 + 1 bits bout à bout, soit
+ * n/4 + 1 octets (16 pour n = 60, la forme d’Equi-X ; 21 pour n = 80).
+ */
 export function tailleSolution(n: number = N_EQUIX): number {
-  return n === N_EQUIX ? 16 : 32
+  return n / 4 + 1
 }
 
-/** Octets d’une part : compteur puis solution. */
-export function taillePart(n: number = N_EQUIX): number {
-  return 4 + tailleSolution(n)
+/**
+ * Taille maximale d’une preuve (écarts de 5 octets au plus) : un serveur refuse
+ * ainsi une entrée trop longue avant tout calcul. 0 si n ou nombre sont refusés.
+ */
+export function tailleMaxPreuve(n: number, nombre: number): number {
+  return nValide(n) && nombreValide(nombre) ? nombre * (ECART_MAX + tailleSolution(n)) : 0
+}
+
+/** Octets du LEB128 non signé d’un entier de 0 à 2³² − 1. */
+function tailleEcart(ecart: number): number {
+  let octets = 1
+  while (ecart >= 0x80) {
+    ecart = Math.floor(ecart / 128)
+    octets++
+  }
+  return octets
+}
+
+/** Écarts des compteurs croissants : le premier compteur, puis `compteur − précédent − 1`. */
+function ecarts(compteurs: readonly number[]): number[] {
+  return compteurs.map((compteur, index) => {
+    const ecart = index === 0 ? compteur : compteur - compteurs[index - 1]! - 1
+    if (!Number.isInteger(compteur) || compteur > 0xffff_ffff || ecart < 0) throw new Error('Compteurs invalides : entiers de 0 à 2³² − 1, strictement croissants.')
+    return ecart
+  })
+}
+
+/** Taille exacte de la preuve que donneraient ces compteurs, pour n. */
+export function taillePreuve(compteurs: readonly number[], n: number = N_EQUIX): number {
+  return ecarts(compteurs).reduce((somme, ecart) => somme + tailleEcart(ecart) + tailleSolution(n), 0)
+}
+
+/**
+ * Encode une preuve depuis ses parts (compteurs strictement croissants) : pour
+ * chaque part, l’écart de compteur en LEB128 canonique puis la solution rangée.
+ * Le décodage et la vérification se font dans le module (Rust).
+ */
+export function encoderPreuve(parts: ReadonlyArray<{ compteur: number; solution: Uint8Array }>): Uint8Array {
+  const liste = ecarts(parts.map((part) => part.compteur))
+  const octets: number[] = []
+  parts.forEach((part, index) => {
+    let ecart = liste[index]!
+    while (ecart >= 0x80) {
+      octets.push((ecart & 0x7f) | 0x80)
+      ecart = Math.floor(ecart / 128)
+    }
+    octets.push(ecart)
+    octets.push(...part.solution)
+  })
+  return new Uint8Array(octets)
 }
 
 /**
@@ -91,7 +147,8 @@ export interface ExportsEquix {
   graine_max(): number
   zone_programme(): number
   version_format(): number
-  verifier(longueurGraine: number, effort: number, nombre: number, n: number): number
+  verifier(longueurGraine: number, effort: number, nombre: number, n: number, longueur: number): number
+  compteurs(nombre: number, n: number, longueur: number): number
   essayer(longueurGraine: number, effort: number, compteur: number, n: number): number
   preparer(longueurGraine: number, compteur: number, n: number): number
   remplir(): void
@@ -113,7 +170,7 @@ function exportsValides(exports: unknown): exports is ExportsEquix {
   const candidat = exports as Record<string, unknown> | null
   return typeof candidat === 'object' && candidat !== null
     && estArrayBuffer((candidat.memory as { buffer?: unknown } | undefined)?.buffer)
-    && ['tampon_adresse', 'tampon_taille', 'graine_max', 'zone_programme', 'version_format', 'verifier', 'essayer', 'preparer', 'remplir', 'chercher'].every((nom) => typeof candidat[nom] === 'function')
+    && ['tampon_adresse', 'tampon_taille', 'graine_max', 'zone_programme', 'version_format', 'verifier', 'compteurs', 'essayer', 'preparer', 'remplir', 'chercher'].every((nom) => typeof candidat[nom] === 'function')
 }
 
 function controler(exports: unknown): ExportsEquix {
@@ -199,12 +256,25 @@ export class ModuleEquix {
    * Vérifie une preuve complète : quelques centaines de microsecondes par part
    * en WebAssembly, quel que soit n (programme HashX et huit évaluations).
    */
-  verifier(graine: Uint8Array, parts: Uint8Array, effort: number, nombre: number, n: number = N_EQUIX): boolean {
-    if (!graineValide(graine) || !nombreValide(nombre) || !effortValide(effort) || !nValide(n) || parts.length !== nombre * taillePart(n)) return false
+  verifier(graine: Uint8Array, preuve: Uint8Array, effort: number, nombre: number, n: number = N_EQUIX): boolean {
+    if (!graineValide(graine) || !effortValide(effort) || preuve.length > tailleMaxPreuve(n, nombre)) return false
     const tampon = this.tampon()
     tampon.set(graine, 0)
-    tampon.set(parts, GRAINE_MAX)
-    return this.exports.verifier(graine.length, effort >>> 0, nombre, n) === 1
+    tampon.set(preuve, GRAINE_MAX)
+    return this.exports.verifier(graine.length, effort >>> 0, nombre, n, preuve.length) === 1
+  }
+
+  /**
+   * Compteurs d’une preuve, décodée par le module sans la vérifier, ou null si
+   * ses octets ne sont pas la forme unique attendue pour `nombre` parts et n.
+   */
+  compteurs(preuve: Uint8Array, nombre: number, n: number = N_EQUIX): number[] | null {
+    if (preuve.length > tailleMaxPreuve(n, nombre)) return null
+    this.tampon().set(preuve, GRAINE_MAX)
+    if (this.exports.compteurs(nombre, n, preuve.length) !== 1) return null
+    const zone = this.exports.zone_programme()
+    const vue = new DataView(this.exports.memory.buffer, this.exports.tampon_adresse() + zone, nombre * 4)
+    return Array.from({ length: nombre }, (_, index) => vue.getUint32(index * 4, true))
   }
 
   private solution(n: number): Uint8Array {
@@ -408,6 +478,7 @@ export interface OptionsResolution {
 }
 
 export interface Resolution {
+  /** La preuve encodée, prête à envoyer : écarts de compteur et solutions rangées (voir `encoderPreuve`). */
   parts: Uint8Array
   essais: number
   /** Moteur utilisé : `js` signale un mode dégradé. */
@@ -473,7 +544,7 @@ function corpsTravailleur(): void {
       else if (portee.creerExportsEquixJs) exports = portee.creerExportsEquixJs()
       else throw new Error('Aucun moteur Equi-X dans ce Web Worker.')
       const tampon = (): Uint8Array => new Uint8Array(exports.memory.buffer, exports.tampon_adresse(), exports.tampon_taille())
-      const tailleSolution = n === 60 ? 16 : 32
+      const tailleSolution = n / 4 + 1
       let compilation = compiler && Boolean(octets) && typeof portee.genererModuleHashx === 'function' && exports.memory instanceof WebAssembly.Memory
       for (let compteur = debut; compteur <= 0xffff_ffff; compteur += pas) {
         tampon().set(graine)
@@ -521,16 +592,9 @@ function erreurAnnulation(signal: AbortSignal): unknown {
   return signal.reason ?? new DOMException('Calcul annulé.', 'AbortError')
 }
 
-function assembler(trouvees: Map<number, Uint8Array>, nombre: number, n: number): Uint8Array {
-  const taille = taillePart(n)
-  const parts = new Uint8Array(nombre * taille)
-  const vue = new DataView(parts.buffer)
+function assembler(trouvees: Map<number, Uint8Array>, nombre: number): Uint8Array {
   const compteurs = [...trouvees.keys()].sort((gauche, droite) => gauche - droite).slice(0, nombre)
-  compteurs.forEach((compteur, index) => {
-    vue.setUint32(index * taille, compteur, true)
-    parts.set(trouvees.get(compteur)!, index * taille + 4)
-  })
-  return parts
+  return encoderPreuve(compteurs.map((compteur) => ({ compteur, solution: trouvees.get(compteur)! })))
 }
 
 /** Temps restant estimé d’après le rythme mesuré, ou null avant le premier essai. */
@@ -592,7 +656,7 @@ async function resoudreSurCeFil(options: OptionsResolution, moteur: Moteur, n: n
     if (trouvees.size < nombre) await new Promise<void>((resolve) => setTimeout(resolve, 0))
   }
   signal?.throwIfAborted()
-  return { parts: assembler(trouvees, nombre, n), essais, moteur, compilation: toujoursCompile, n, fils: 0, dureeMs: performance.now() - debut, memoireOctets: module.memoireOctets }
+  return { parts: assembler(trouvees, nombre), essais, moteur, compilation: toujoursCompile, n, fils: 0, dureeMs: performance.now() - debut, memoireOctets: module.memoireOctets }
 }
 
 function resoudreEnParallele(options: OptionsResolution, moteur: Moteur, creer: NonNullable<OptionsResolution['creerTravailleur']>, fils: number, n: number, compiler: boolean): Promise<Resolution> {
@@ -646,7 +710,7 @@ function resoudreEnParallele(options: OptionsResolution, moteur: Moteur, creer: 
           onProgression?.({ moteur, compilation, n, essais, parts, dureeMs, restantEstimeMs: restantEstime(essais, parts, nombre, effort, dureeMs), memoireOctets: memoire })
           if (trouvees.size >= nombre) {
             terminer()
-            resolve({ parts: assembler(trouvees, nombre, n), essais, moteur, compilation: toujoursCompile, n, fils, dureeMs, memoireOctets: memoireMax })
+            resolve({ parts: assembler(trouvees, nombre), essais, moteur, compilation: toujoursCompile, n, fils, dureeMs, memoireOctets: memoireMax })
           }
         }
         const octets = moteur === 'wasm' ? options.octets!.slice().buffer : undefined

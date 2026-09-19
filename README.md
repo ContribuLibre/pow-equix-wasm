@@ -141,10 +141,10 @@ une autre.
   retenue si `blake2b-256(graine HashX ‖ solution)`, lu en u32 gros-boutiste,
   multiplié par l’**effort**, ne dépasse pas 2³² − 1 : c’est la règle d’effort
   de Tor (`hs_pow`). Pour n = 60, la graine HashX est le défi lui-même.
-- Une preuve réunit **`nombre` parts** `compteur ‖ solution`, aux compteurs
-  strictement croissants : 20 octets par part pour n = 60, 36 au-delà.
-  Plusieurs petites preuves plutôt qu’une grande rendent l’attente régulière
-  (écart type relatif en `1/√nombre`).
+- Une preuve réunit **`nombre` parts** aux compteurs strictement croissants,
+  sous la forme compacte décrite plus bas : ≈ 17 octets par part pour n = 60,
+  22 pour n = 80. Plusieurs petites preuves plutôt qu’une grande rendent
+  l’attente régulière (écart type relatif en `1/√nombre`).
 - Probabilité qu’un essai aboutisse : environ `1 − e^(−2/effort)`, soit 86 %
   pour l’effort 1, 62 % pour 2, 12 % pour 16 (`probabiliteEssai`).
 - Le vérificateur doit employer les mêmes effort, nombre **et n** que le
@@ -170,8 +170,11 @@ Avec `c = n / 4` et `N = 2^(c+1)` indices (n ∈ {60, 64, 68, 72, 76, 80}) :
   la moitié gauche, lue de son dernier élément vers le premier, ne dépasse pas
   la moitié droite lue de la même façon (ordre lexicographique, égalité
   permise) : c’est la règle d’Equi-X, qui rend chaque solution unique.
-- **Format** : 8 × u16 petit-boutistes (16 octets) pour n = 60, comme Equi-X et
-  la version 0.2 ; 8 × u32 petit-boutistes (32 octets) au-delà.
+- **Solution rangée** : les 8 indices sur b = n/4 + 1 bits chacun, bout à bout
+  dans un flux de bits petit-boutiste (indice 0 dans les bits de poids faible
+  du premier octet), soit exactement b octets. Pour n = 60 (b = 16), c’est
+  octet pour octet la forme d’Equi-X (8 × u16 petit-boutistes) ; 21 octets pour
+  n = 80. La règle d’effort porte sur cette forme rangée.
 - **Solveur** : celui d’Equi-X, généralisé (`crates/pow-equix/src/solveur.rs`) :
   2^(c−7) seaux de 336 places par couche (256 éléments en moyenne), table
   temporaire de 128 seaux de 12 places, mêmes règles d’abandon quand un seau
@@ -179,6 +182,42 @@ Avec `c = n / 4` et `N = 2^(c+1)` indices (n ∈ {60, 64, 68, 72, 76, 80}) :
   il donne exactement les solutions de la crate `equix` d’Arti, dans le même
   ordre : vérifié sur 2 000 défis, et les deux vérifications s’accordent sur
   toutes les altérations essayées (tests Rust).
+
+### Forme d’une preuve
+
+```text
+preuve = pour chaque part : écart (LEB128 non signé, 1 à 5 octets) ‖ solution rangée (n/4 + 1 octets)
+```
+
+- Le premier écart est le compteur lui-même, les suivants `compteur −
+  précédent − 1` : la stricte croissance des compteurs est implicite, et les
+  compteurs d’une preuve (en général sous 128) ne coûtent qu’un octet chacun.
+- **Une seule forme d’octets par preuve.** Le décodeur refuse tout LEB128 non
+  canonique (octet final nul dans un encodage de plus d’un octet, plus de
+  5 octets, valeur au-delà de 2³² − 1), un compteur cumulé au-delà de
+  2³² − 1, un nombre de parts différent de `nombre` et tout octet en trop ou
+  manquant. Sans cette règle, un attaquant pourrait réencoder une preuve
+  acceptée (zéros de tête dans un écart…) et la faire passer pour nouvelle
+  auprès d’une détection de rejeu fondée sur l’empreinte de la preuve.
+- Taille maximale : `nombre × (5 + n/4 + 1)` octets (`tailleMaxPreuve(n,
+  nombre)`) ; un serveur refuse une entrée plus longue avant tout calcul.
+- Tailles mesurées pour 4 parts, compteurs sous 128 : 68 octets pour n = 60
+  (effort 1 comme effort 16), 72 pour n = 64, 80 pour n = 72, 88 pour n = 80,
+  contre 80 et 144 octets avec les parts à compteur u32 d’avant.
+- **Ce qui est standard, et ce qui ne l’est pas.** À n = 60, la solution est
+  exactement la forme standard d’Equi-X : 16 octets, 8 × u16 petit-boutistes,
+  telle que la produisent et la lisent Tor et la crate `equix`. L’enveloppe
+  (écarts de compteur en LEB128, plusieurs parts) et les n supérieurs à 60
+  sont propres à ce paquet : ni Tor ni une autre implémentation ne lisent
+  cette enveloppe. Il n’y a qu’un format ; si un format aligné sur un autre
+  protocole devait s’ajouter, ce serait comme une option explicite du
+  protocole, convenue entre solveur et vérificateur, jamais devinée à la
+  lecture des octets : sinon une même preuve aurait deux encodages, et la
+  détection de rejeu se contournerait.
+- **Rupture avec la 0.2** : ses preuves (parts de 20 octets, `compteur u32 ‖
+  solution`) ne sont plus acceptées, et `VERSION_FORMAT` vaut 2, si bien qu’un
+  chargeur 0.2 refuse ce module. La solution d’Equi-X, elle, est inchangée :
+  à n = 60, seuls le compteur et l’enveloppe changent.
 
 Pourquoi deux solutions par défi à tout n : chaque étage réunit N² / 2 paires
 dont la somme s’annule sur c bits avec une probabilité 2^−c, soit ≈ N paires
@@ -232,7 +271,11 @@ suffit (aucun `eval`) ; les Web Workers viennent d’un Blob, donc `worker-src b
 | `N_EQUIX`, `N_VALIDES` | 60, et les n acceptés : 60, 64, 68, 72, 76, 80 |
 | `memoirePourN(n)` | mémoire de travail du solveur par fil, en octets (le module ajoute ≈ 1,3 Mio) |
 | `nPourMemoire(mio)` | plus grand n dont la mémoire de travail tient dans `mio` Mio (60 au minimum) |
-| `taillePart(n)`, `tailleSolution(n)` | 20 et 16 octets pour n = 60, 36 et 32 au-delà |
+| `tailleSolution(n)` | octets d’une solution rangée : n/4 + 1 (16 pour n = 60, 21 pour n = 80) |
+| `tailleMaxPreuve(n, nombre)` | taille maximale d’une preuve, `nombre × (5 + n/4 + 1)` : refuser plus long avant tout calcul |
+| `taillePreuve(compteurs, n)` | taille exacte de la preuve pour ces compteurs |
+| `encoderPreuve(parts)` | assemble `{ compteur, solution }[]` en preuve (le module décode et vérifie) |
+| `ModuleEquix.compteurs(preuve, nombre, n)` | compteurs d’une preuve, décodée sans être vérifiée, ou `null` si sa forme n’est pas la forme unique |
 | `msParEssai(execution, n)` | durée de référence d’un essai (`wasmCompile`, `wasm`, `js`, `jsSansJit`) |
 | `estimerDuree({ effort, nombre, execution, fils, n })` | durée probable d’une preuve, avant de calculer |
 | `executionPrevue(options)` | exécution que `resoudre` emploiera avec ces options |
@@ -290,12 +333,14 @@ et une difficulté réaliste pour ces personnes.
 
 ```ts
 import { readFile } from 'node:fs/promises'
-import { ModuleEquix, construireGraine, depuisHexadecimal } from 'pow-equix-wasm'
+import { ModuleEquix, construireGraine, depuisHexadecimal, tailleMaxPreuve } from 'pow-equix-wasm'
 
 const module = await ModuleEquix.instancier(await readFile(new URL(import.meta.resolve('pow-equix-wasm/equix.wasm'))))
 const graine = await construireGraine('mon-service/1', JSON.stringify(requeteSansPreuve))
-// Mêmes effort, nombre et n que le solveur ; n = 60 par défaut, les preuves de la 0.2 restent valides.
-const valide = module.verifier(graine, depuisHexadecimal(preuve) ?? new Uint8Array(), 1, 4, 60)
+const octets = depuisHexadecimal(preuve) ?? new Uint8Array()
+// Refuser une entrée trop longue avant tout calcul, puis vérifier avec les mêmes effort, nombre et n que le solveur.
+const valide = octets.length <= tailleMaxPreuve(60, 4) && module.verifier(graine, octets, 1, 4, 60)
+// Détection de rejeu : l’empreinte de `octets` suffit, une preuve n’ayant qu’une forme d’octets.
 ```
 
 La vérification coûte ≈ 0,2 ms par part quel que soit n : le programme HashX
@@ -305,7 +350,8 @@ Une page qui ne peut rien télécharger (ouverte en `file://`, script unique)
 intègre le module en base64 avec `octetsEquix()` de `pow-equix-wasm/octets`.
 
 Ce qui reste à la charge de l’appelant, et que le paquet ne fait pas :
-refuser les preuves rejouées, vérifier la fraîcheur de la requête (horodatage
+refuser les preuves rejouées (l’empreinte des octets de la preuve y suffit,
+chaque preuve n’ayant qu’une forme ; ou ses compteurs, `module.compteurs`), vérifier la fraîcheur de la requête (horodatage
 dans le contenu haché) et limiter le débit des vérifications.
 
 ## Mesures
@@ -317,14 +363,14 @@ essai ; Chromium 153 sans interface, Bun 1.4.0, Rust 1.93.1 en natif
 `cargo run --release -p pow-equix [--features compilateur] --example mesure`
 les reproduisent.
 
-| n | Mémoire de travail | Mémoire réelle du module | Part | Essai WebAssembly interprété (Chromium / Bun) | Essai WebAssembly compilé (Chromium / Bun) | Natif compilé | Natif interprété | Chromium compilé / natif compilé | Vérification d’une part |
+| n | Mémoire de travail | Mémoire réelle du module | Preuve de 4 parts | Essai WebAssembly interprété (Chromium / Bun) | Essai WebAssembly compilé (Chromium / Bun) | Natif compilé | Natif interprété | Chromium compilé / natif compilé | Vérification d’une part |
 |---|---|---|---|---|---|---|---|---|---|
-| 60 | 1,8 Mio | 3,1 Mio | 20 o | 442 / 427 ms | 34 / 49 ms | 21 ms | 490 ms | × 1,6 | 0,18 ms |
-| 64 | 3,8 Mio | 4,9 Mio | 36 o | 847 / 752 ms | 66 à 74 / 86 ms | 48 ms | 990 ms | × 1,4 à 1,5 | 0,16 ms |
-| 68 | 7,6 Mio | 8,9 Mio | 36 o | 1,9 / 1,8 s | 155 / 158 ms | 88 ms | 1,9 s | × 1,8 | 0,16 ms |
-| 72 | 15 Mio | 16,5 Mio | 36 o | 3,4 / 3,6 s | 271 à 288 / 287 ms | 177 ms | 3,9 s | × 1,5 à 1,6 | 0,18 ms |
-| 76 | 30 Mio | 31,6 Mio | 36 o | 6,8 / 6,7 s | 557 à 569 / 595 ms | 356 ms | 8,0 s | × 1,6 | 0,16 ms |
-| 80 | 63 Mio | 64,5 Mio | 36 o | 14,7 / 13,9 s | 1,24 à 1,30 / 1,23 s | 721 ms | 16,4 s | × 1,7 à 1,8 | 0,16 ms |
+| 60 | 1,8 Mio | 3,1 Mio | 68 o | 442 / 427 ms | 34 / 49 ms | 21 ms | 490 ms | × 1,6 | 0,18 ms |
+| 64 | 3,8 Mio | 4,9 Mio | 72 o | 847 / 752 ms | 66 à 74 / 86 ms | 48 ms | 990 ms | × 1,4 à 1,5 | 0,16 ms |
+| 68 | 7,6 Mio | 8,9 Mio | 76 o | 1,9 / 1,8 s | 155 / 158 ms | 88 ms | 1,9 s | × 1,8 | 0,16 ms |
+| 72 | 15 Mio | 16,5 Mio | 80 o | 3,4 / 3,6 s | 271 à 288 / 287 ms | 177 ms | 3,9 s | × 1,5 à 1,6 | 0,18 ms |
+| 76 | 30 Mio | 31,6 Mio | 84 o | 6,8 / 6,7 s | 557 à 569 / 595 ms | 356 ms | 8,0 s | × 1,6 | 0,16 ms |
+| 80 | 63 Mio | 64,5 Mio | 88 o | 14,7 / 13,9 s | 1,24 à 1,30 / 1,23 s | 721 ms | 16,4 s | × 1,7 à 1,8 | 0,16 ms |
 
 - Avant la compilation, l’écart entre le navigateur et un attaquant natif
   était de ≈ × 20 (430 ms contre 21 ms à n = 60) ; il est maintenant de

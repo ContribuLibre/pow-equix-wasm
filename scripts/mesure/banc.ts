@@ -2,7 +2,7 @@
 // et compilé, décomposé, pour chaque n ; vérification ; mémoire réelle du module.
 // Employé par scripts/mesurer.ts (Bun, et Chromium sans interface).
 
-import { ModuleEquix, TAILLE_PART, genererModuleHashx, taillePart } from '../../src/index.ts'
+import { ModuleEquix, encoderPreuve, genererModuleHashx } from '../../src/index.ts'
 import { TAILLE_DESCRIPTION } from '../../src/compilation.ts'
 
 export interface LigneMesure {
@@ -94,9 +94,7 @@ async function mesurerPublic(octets: Uint8Array, n: number, essais: number, comp
   let verificationMsParPart: number | undefined
   const premiere = trouvees[0]
   if (premiere) {
-    const part = new Uint8Array(taillePart(n))
-    new DataView(part.buffer).setUint32(0, premiere[0], true)
-    part.set(premiere[1], 4)
+    const part = encoderPreuve([{ compteur: premiere[0], solution: premiere[1] }])
     const repetitions = 200
     const t0 = performance.now()
     for (let fois = 0; fois < repetitions; fois++) if (!module.verifier(graine, part, 1, 1, n)) throw new Error('Vérification refusée')
@@ -114,7 +112,6 @@ export interface PlanMesure {
 }
 
 export async function mesurer(octets: Uint8Array, plan: PlanMesure, rapporter: (ligne: LigneMesure) => void): Promise<void> {
-  void TAILLE_PART
   for (const tranche of plan.tranches) rapporter(await mesurerCompile(octets, 60, plan.essaisCompile, tranche))
   for (const n of plan.n) {
     // Une échelle d’essais décroissante avec n garde chaque mesure sous la minute.

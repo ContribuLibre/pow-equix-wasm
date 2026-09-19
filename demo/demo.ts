@@ -4,10 +4,10 @@
 
 import {
   type Compilation, type CreateurEquixJs, type Execution, type Moteur, ModuleEquix, construireGraine, essaisAttendus, estimerDuree, executionPrevue,
-  filsConseilles, memoirePourN, msParEssai, probabiliteEssai, ralentissement, resoudre, taillePart, webAssemblyDisponible,
+  filsConseilles, memoirePourN, msParEssai, probabiliteEssai, ralentissement, resoudre, tailleMaxPreuve, taillePreuve, webAssemblyDisponible,
 } from '../src/index.ts'
 
-interface Mesure { moteur: Moteur; compilation: boolean; n: number; duree: number; essais: number; memoire: number }
+interface Mesure { moteur: Moteur; compilation: boolean; n: number; duree: number; essais: number; memoire: number; taille: number }
 interface Verification { moteur: Moteur; parVerification: number; memoire: number }
 type Reglages = { effort: number; nombre: number; n: number; compilation: Compilation; fils: number; moteur: Moteur | 'auto'; repetitions: number; verifications: number }
 
@@ -87,6 +87,14 @@ const champFils = formulaire.elements.namedItem('fils') as HTMLInputElement
 let filsChoisis = false
 champFils.addEventListener('input', () => { filsChoisis = true })
 
+/**
+ * Taille probable de la preuve : compteurs répartis régulièrement sur les essais
+ * attendus (chaque écart en LEB128 : un octet sous 128, deux sous 16 384…).
+ */
+function taillePrevue(choix: Reglages, essais: number): number {
+  return taillePreuve(Array.from({ length: choix.nombre }, (_, index) => Math.max(index, Math.round((index + 1) * essais / choix.nombre) - 1)), choix.n)
+}
+
 /** Exécution que le calcul emploiera, avec les deux moteurs fournis. */
 function executionChoisie(choix: Reglages): Execution | null {
   return executionPrevue({ octets: new Uint8Array(1), js: () => { throw new Error('non chargé') }, moteur: choix.moteur, compilation: choix.compilation })
@@ -105,7 +113,7 @@ function prevoir(): void {
   const filsActifs = Math.min(fils, Math.ceil(essais))
   const parFil = memoirePourN(choix.n) + MEMOIRE_MODULE
   const lignes: Array<[string, string]> = [
-    ['Taille de la preuve', `${choix.nombre * taillePart(choix.n)} octets (${choix.nombre} × ${taillePart(choix.n)})`],
+    ['Taille de la preuve', `≈ ${taillePrevue(choix, essais)} octets (au plus ${tailleMaxPreuve(choix.n, choix.nombre)})`],
     ['Réussite d’un essai', `${nombres.format(probabiliteEssai(choix.effort) * 100)} %`],
     ['Essais attendus', `${nombres.format(essais)} en moyenne par preuve`],
     ['Exécution prévue', prevue === null ? 'aucune : WebAssembly indisponible' : `${NOMS_EXECUTION[prevue]}${prevue === 'wasmCompile' ? '' : `, ${nombres.format(ralentissement(prevue, 'wasmCompile'))} × plus lent que compilé`}`],
@@ -172,7 +180,7 @@ formulaire.addEventListener('submit', async (evenement) => {
           ])
         },
       })
-      mesures.push({ moteur: resultat.moteur, compilation: resultat.compilation, n: resultat.n, duree: resultat.dureeMs, essais: resultat.essais, memoire: Math.max(memoire, resultat.memoireOctets) })
+      mesures.push({ moteur: resultat.moteur, compilation: resultat.compilation, n: resultat.n, duree: resultat.dureeMs, essais: resultat.essais, memoire: Math.max(memoire, resultat.memoireOctets), taille: resultat.parts.length })
       // Dès la première preuve : pause pour mesurer la vérification, puis la suite.
       if (!verification) {
         etat.textContent = 'Mesure de la vérification…'
@@ -240,13 +248,13 @@ function afficher(choix: Reglages, mesures: Mesure[], verification: Verification
     ['Moteur', verification.moteur === 'wasm' ? 'WebAssembly' : 'JavaScript'],
     ['Par vérification', duree(verification.parVerification)],
     ['Par part', duree(verification.parVerification / choix.nombre)],
-    ['Taille de la preuve', `${choix.nombre * taillePart(choix.n)} octets (${choix.nombre} × ${taillePart(choix.n)})`],
+    ['Taille de la preuve', mesures.length ? `${mesures.at(-1)!.taille} octets mesurés (≈ ${taillePrevue(choix, essaisAttendus(choix.effort, choix.nombre))} prévus)` : '…'],
     ['Mémoire du module', taille(verification.memoire)],
   ] : [['Vérification', 'mesurée dès la fin de la première preuve']])
   element<HTMLTextAreaElement>('export').value = JSON.stringify({
     appareil,
     reglages: choix,
-    preuves: mesures.map((mesure) => ({ moteur: mesure.moteur, compilation: mesure.compilation, n: mesure.n, dureeMs: Math.round(mesure.duree), essais: mesure.essais, memoireOctets: mesure.memoire })),
+    preuves: mesures.map((mesure) => ({ moteur: mesure.moteur, compilation: mesure.compilation, n: mesure.n, tailleOctets: mesure.taille, dureeMs: Math.round(mesure.duree), essais: mesure.essais, memoireOctets: mesure.memoire })),
     synthese: mesures.length ? { medianeMs: Math.round(centile(durees, 0.5)), p90Ms: Math.round(centile(durees, 0.9)), tempsParEssaiMs: Number(tempsParEssaiMesure!.toFixed(2)), memoireMaxOctets: memoireMax } : null,
     verification: verification ? { moteur: verification.moteur, parVerificationMs: Number(verification.parVerification.toFixed(4)), memoireOctets: verification.memoire } : null,
     date: new Date().toISOString(),
