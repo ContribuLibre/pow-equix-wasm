@@ -4,12 +4,12 @@
 
 import {
   type Compilation, type CreateurEquixJs, type Execution, type Moteur, ModuleEquix, construireGraine, essaisAttendus, estimerDuree, executionPrevue,
-  filsConseilles, memoirePourN, msParEssai, probabiliteEssai, ralentissement, resoudre, tailleMaxPreuve, taillePreuve, webAssemblyDisponible,
+  filsAdaptatifs, filsConseilles, memoirePourN, msParEssai, probabiliteEssai, ralentissement, resoudre, tailleMaxPreuve, taillePreuve, webAssemblyDisponible,
 } from '../src/index.ts'
 
-interface Mesure { moteur: Moteur; compilation: boolean; n: number; duree: number; essais: number; memoire: number; taille: number }
+interface Mesure { moteur: Moteur; compilation: boolean; n: number; duree: number; essais: number; memoire: number; taille: number; fils: number }
 interface Verification { moteur: Moteur; parVerification: number; memoire: number }
-type Reglages = { effort: number; nombre: number; n: number; compilation: Compilation; fils: number; moteur: Moteur | 'auto'; repetitions: number; verifications: number }
+type Reglages = { effort: number; nombre: number; n: number; compilation: Compilation; fils: number; adaptatif: boolean; moteur: Moteur | 'auto'; repetitions: number; verifications: number }
 
 /** Mémoire propre à une instance du module (pile, tas, tampon), en plus de la zone de travail du solveur : mesurée ≈ 1,3 Mio. */
 const MEMOIRE_MODULE = 1.3 * 1024 * 1024
@@ -62,7 +62,7 @@ function reglages(): Reglages {
   const valeur = (nom: string): number => Number((formulaire.elements.namedItem(nom) as HTMLInputElement).value)
   const choix = (nom: string): string => (formulaire.elements.namedItem(nom) as HTMLSelectElement).value
   return {
-    effort: valeur('effort'), nombre: valeur('nombre'), n: Number(choix('n')), compilation: choix('compilation') as Compilation, fils: valeur('fils'),
+    effort: valeur('effort'), nombre: valeur('nombre'), n: Number(choix('n')), compilation: choix('compilation') as Compilation, fils: valeur('fils'), adaptatif: choix('repartition') === 'adaptatif',
     moteur: choix('moteur') as Reglages['moteur'], repetitions: valeur('repetitions'), verifications: valeur('verifications'),
   }
 }
@@ -110,6 +110,7 @@ function prevoir(): void {
   const essais = essaisAttendus(choix.effort, choix.nombre)
   const prevue = executionChoisie(choix)
   const execution: Execution = prevue ?? 'jsSansJit'
+  champFils.disabled = choix.adaptatif
   const filsActifs = Math.min(fils, Math.ceil(essais))
   const parFil = memoirePourN(choix.n) + MEMOIRE_MODULE
   const lignes: Array<[string, string]> = [
@@ -118,6 +119,7 @@ function prevoir(): void {
     ['Essais attendus', `${nombres.format(essais)} en moyenne par preuve`],
     ['Exécution prévue', prevue === null ? 'aucune : WebAssembly indisponible' : `${NOMS_EXECUTION[prevue]}${prevue === 'wasmCompile' ? '' : `, ${nombres.format(ralentissement(prevue, 'wasmCompile'))} × plus lent que compilé`}`],
     ['Durée d’un essai', `≈ ${duree(msParEssai(execution, choix.n))} sur un cœur`],
+    ...(choix.adaptatif ? [['Fils', `adaptatifs : 1 au départ${appareil.memoireAppareilGo ? `, ${filsAdaptatifs()({ essaisTermines: 0, dureePremierEssaiMs: null, dureeMoyenneEssaiMs: null, filsActifs: 1, n: choix.n, execution })} d’après la mémoire de l’appareil` : ', puis jusqu’à 8 si l’appareil et l’écran semblent costauds'}`] as [string, string]] : []),
     ['Durée estimée', `${duree(estimerDuree({ effort: choix.effort, nombre: choix.nombre, execution, fils, n: choix.n }))} avec ${fils} fil(s)`],
     ['Mémoire par fil', `≈ ${taille(parFil)} (${taille(memoirePourN(choix.n))} de travail + module)`],
     ['Mémoire totale', `≈ ${taille(parFil * filsActifs)} pour ${filsActifs} fil(s) actif(s)`],
@@ -165,8 +167,14 @@ formulaire.addEventListener('submit', async (evenement) => {
       barre.max = choix.nombre
       barre.value = 0
       let memoire = 0
+      const paliers: number[] = []
+      /** Suite des nombres de fils actifs pendant cette preuve : 1 → 2 → 4… */
+      const evolution = (actifs: number): string => {
+        if (paliers.at(-1) !== actifs) paliers.push(actifs)
+        return paliers.join(' → ')
+      }
       const resultat = await resoudre({
-        octets, chargerJs, moteur: choix.moteur, compilation: choix.compilation, n: choix.n, graine, effort: choix.effort, nombre: choix.nombre, fils: choix.fils, signal: calcul.signal,
+        octets, chargerJs, moteur: choix.moteur, compilation: choix.compilation, n: choix.n, graine, effort: choix.effort, nombre: choix.nombre, fils: choix.adaptatif ? filsAdaptatifs() : choix.fils, signal: calcul.signal,
         onProgression: (progression) => {
           memoire = Math.max(memoire, progression.memoireOctets)
           barre.value = progression.parts
@@ -174,6 +182,7 @@ formulaire.addEventListener('submit', async (evenement) => {
             ['Moteur', progression.moteur === 'wasm' ? `WebAssembly, programmes ${progression.compilation ? 'compilés' : 'interprétés'}` : 'JavaScript'],
             ...(progression.repli ? [['Repli', progression.repli.raison === 'indisponible' ? 'WebAssembly indisponible' : `WebAssembly en échec : ${progression.repli.message ?? ''}`] as [string, string]] : []),
             ['Paramètre', `n = ${progression.n}`],
+            ['Web Workers actifs', progression.filsActifs ? `${progression.filsActifs}${choix.adaptatif ? ` (évolution : ${evolution(progression.filsActifs)})` : ''}` : 'aucun : fil principal'],
             ['Parts trouvées', `${progression.parts} / ${choix.nombre}`],
             ['Essais', String(progression.essais)],
             ['Temps écoulé', duree(progression.dureeMs)],
@@ -182,7 +191,7 @@ formulaire.addEventListener('submit', async (evenement) => {
           ])
         },
       })
-      mesures.push({ moteur: resultat.moteur, compilation: resultat.compilation, n: resultat.n, duree: resultat.dureeMs, essais: resultat.essais, memoire: Math.max(memoire, resultat.memoireOctets), taille: resultat.parts.length })
+      mesures.push({ moteur: resultat.moteur, compilation: resultat.compilation, n: resultat.n, duree: resultat.dureeMs, essais: resultat.essais, memoire: Math.max(memoire, resultat.memoireOctets), taille: resultat.parts.length, fils: resultat.fils })
       // Dès la première preuve : pause pour mesurer la vérification, puis la suite.
       if (!verification) {
         etat.textContent = 'Mesure de la vérification…'
@@ -223,7 +232,8 @@ function afficher(choix: Reglages, mesures: Mesure[], verification: Verification
   const tempsTotal = durees.reduce((somme, valeur) => somme + valeur, 0)
   if (mesures.length) {
     // Parallélisme effectif : un fil ne compte que s’il reste un essai à mener.
-    const parallelisme = Math.min(Math.max(1, choix.fils), essais / mesures.length)
+    const filsMoyens = mesures.reduce((somme, mesure) => somme + mesure.fils, 0) / mesures.length
+    const parallelisme = Math.min(Math.max(1, filsMoyens), essais / mesures.length)
     tempsParEssaiMesure = tempsTotal * parallelisme / essais
   }
   const memoireMax = mesures.length ? Math.max(...mesures.map((mesure) => mesure.memoire)) : 0
@@ -235,7 +245,8 @@ function afficher(choix: Reglages, mesures: Mesure[], verification: Verification
     ['Min – max', `${duree(Math.min(...durees))} – ${duree(Math.max(...durees))}`],
     ['Essais par preuve', `${nombres.format(essais / mesures.length)} mesurés, ${nombres.format(essaisAttendus(choix.effort, choix.nombre))} attendus`],
     ['Durée d’un essai (un fil)', `${duree(tempsParEssaiMesure!)} (référence ${NOMS_EXECUTION[executionMesuree(mesures[0]!)]} : ${duree(msParEssai(executionMesuree(mesures[0]!), mesures[0]!.n))})`],
-    ['Mémoire du module', `${taille(memoireMax)} au total${choix.fils > 0 ? `, ${taille(memoireMax / Math.min(choix.fils, Math.ceil(essais / mesures.length)))} par fil actif` : ''}`],
+    ['Web Workers', `au plus ${Math.max(...mesures.map((mesure) => mesure.fils))} à la fois`],
+    ['Mémoire du module', `${taille(memoireMax)} au total${mesures.at(-1)!.fils > 0 ? `, ${taille(memoireMax / Math.max(...mesures.map((mesure) => mesure.fils)))} par fil actif` : ''}`],
   ] : [['Preuves mesurées', `0 sur ${choix.repetitions}`]])
   element('lignes').replaceChildren(...mesures.map((mesure, index) => {
     const ligne = document.createElement('tr')
@@ -256,7 +267,7 @@ function afficher(choix: Reglages, mesures: Mesure[], verification: Verification
   element<HTMLTextAreaElement>('export').value = JSON.stringify({
     appareil,
     reglages: choix,
-    preuves: mesures.map((mesure) => ({ moteur: mesure.moteur, compilation: mesure.compilation, n: mesure.n, tailleOctets: mesure.taille, dureeMs: Math.round(mesure.duree), essais: mesure.essais, memoireOctets: mesure.memoire })),
+    preuves: mesures.map((mesure) => ({ moteur: mesure.moteur, compilation: mesure.compilation, n: mesure.n, fils: mesure.fils, tailleOctets: mesure.taille, dureeMs: Math.round(mesure.duree), essais: mesure.essais, memoireOctets: mesure.memoire })),
     synthese: mesures.length ? { medianeMs: Math.round(centile(durees, 0.5)), p90Ms: Math.round(centile(durees, 0.9)), tempsParEssaiMs: Number(tempsParEssaiMesure!.toFixed(2)), memoireMaxOctets: memoireMax } : null,
     verification: verification ? { moteur: verification.moteur, parVerificationMs: Number(verification.parVerification.toFixed(4)), memoireOctets: verification.memoire } : null,
     date: new Date().toISOString(),

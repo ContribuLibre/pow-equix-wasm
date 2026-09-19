@@ -50,9 +50,16 @@
           </select>
           <small>Compiler chaque programme rend un essai plus de dix fois plus rapide en WebAssembly.</small>
         </label>
+        <label>Répartition
+          <select name="repartition">
+            <option value="fixe">Nombre de fils fixe</option>
+            <option value="adaptatif">Adaptative : 1 fil, puis plus si l’appareil semble costaud</option>
+          </select>
+          <small>Adaptative (<code>filsAdaptatifs</code>) : conseillée pour le web grand public, où trop de fils peut faire tuer l’onglet d’un téléphone.</small>
+        </label>
         <label>Web Workers
           <input name="fils" type="number" min="0" max="64" step="1" required>
-          <small>Prérempli comme le paquet : autant que de cœurs, sans dépasser les essais attendus. 0 : fil principal.</small>
+          <small>Nombre fixe, prérempli comme le paquet : autant que de cœurs, sans dépasser les essais attendus. 0 : fil principal.</small>
         </label>
         <label>Moteur
           <select name="moteur">
