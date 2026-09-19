@@ -1,11 +1,11 @@
-// Schéma de l’export du banc : `pow-equix-wasm/banc`, version 1. Un fichier par
+// Schéma de l’export du banc : `pow-equix-wasm/banc`, version 2. Un fichier par
 // appareil et par lancement ; scripts/agreger-banc.ts en réunit plusieurs.
 // Toute évolution incompatible incrémente VERSION_BANC.
 
-import type { Scenario, Statistiques } from './scenarios.ts'
+import type { FichierScenarios, Plafond, Scenario, Statistiques } from './scenarios.ts'
 
 export const FORMAT_BANC = 'pow-equix-wasm/banc'
-export const VERSION_BANC = 1
+export const VERSION_BANC = 2
 
 /** Fiche de l’appareil : détectée par la page, et saisie par la personne qui lance le banc. */
 export interface FicheAppareil {
@@ -36,16 +36,41 @@ export interface Repetition {
   verification: { dureeMs: number; memoireOctets: number; memoire: 'mesuree' | 'estimee'; valide: boolean }
 }
 
+/** complet : toutes les répétitions et le débit ; incomplet : abandonné après 3 tentatives ; enCours : export partiel. */
+export type StatutScenario = 'complet' | 'incomplet' | 'enCours' | 'nonCommence'
+
+/**
+ * Débit maximal de l’appareil : `concurrence` défis en parallèle, un fil
+ * chacun, enchaînés pendant `dureeMs` ; défis finis dans la fenêtre.
+ */
+export interface DebitMaximal {
+  concurrence: number
+  dureeMs: number
+  defis: number
+  /** Défis résolus en 100 s à ce rythme (mesuré directement si dureeMs = 100 000). */
+  parCentSecondes: number
+  dureeMoyenneDefiMs: number | null
+}
+
 export interface ResultatScenario {
   /** Le scénario tel que lancé (répétitions effectives, réduites en mode rapide). */
   scenario: Scenario
+  statut: StatutScenario
+  /** Tentatives consommées (une par lancement interrompu par un plantage ou une erreur, au plus 3). */
+  tentatives: number
+  erreurs: string[]
+  /** Fils de chaque défi : tous les cœurs (ou 1 sans parallélisation), sous le plafond mémoire. */
   filsEffectifs: number
+  plafond: Plafond
   /** Durée d’un essai sur un fil, mesurée au calibrage, ou null. */
   msParEssaiCalibre: number | null
+  /** Latence : chaque répétition est un défi seul sur `filsEffectifs` fils, ce que vit l’utilisateur. */
   repetitions: Repetition[]
   statistiques: { dureeMs: Statistiques; essais: Statistiques; verificationMs: Statistiques; tailleOctets: Statistiques }
-  /** Défis résolus en 100 s : extrapolé de la durée moyenne ; mesuré si les répétitions enchaînées couvrent 100 s. */
+  /** Défis seuls enchaînés en 100 s (latence) : extrapolé de la moyenne ; mesuré si les répétitions couvrent 100 s. */
   debit100s: { extrapole: number; mesure: number | null }
+  /** Débit maximal de l’appareil (défis en parallèle), ou null s’il n’a pas été mesuré. */
+  debitMaximal: DebitMaximal | null
 }
 
 /** Débit de vérification d’une configuration (algorithme et paramètres), sur 1 fil ou sur tous les cœurs. */
@@ -68,6 +93,10 @@ export interface ExportBanc {
   paquet: string
   /** Mode rapide : moins de répétitions, résultats non représentatifs. */
   rapide: boolean
+  /** Export partiel : certains scénarios ne sont pas finis. */
+  partiel: boolean
+  /** Fichier de scénarios lancé, et son empreinte (clé des résultats stockés). */
+  fichierScenarios: FichierScenarios & { empreinte: string }
   appareil: FicheAppareil
   scenarios: ResultatScenario[]
   verification: DebitVerification[]

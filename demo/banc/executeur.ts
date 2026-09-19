@@ -5,9 +5,9 @@
 import { ModuleEquix, resoudre } from '../../src/index.ts'
 import { tailleNonces, verifierNonces } from './moteurs.ts'
 import {
-  type ParametresArgon2id, type Scenario, cleConfiguration, debit100s, filsEffectifs, statistiques,
+  type ParametresArgon2id, type Plafond, type Scenario, ajusterDifficulte, centile, cleConfiguration, debit100s, difficultePourDuree, statistiques,
 } from './scenarios.ts'
-import type { DebitVerification, Repetition, ResultatScenario } from './schema.ts'
+import type { DebitMaximal, DebitVerification, Repetition, ResultatScenario, StatutScenario } from './schema.ts'
 
 export interface Environnement {
   /** Crée un Web Worker du banc (demo/banc/travailleur.ts une fois construit). */
@@ -58,8 +58,7 @@ function reponse<T>(travailleur: Worker, type: string, signal?: AbortSignal): Pr
 }
 
 /** Un défi SHA-256 ou Argon2id : plages de nonces distribuées aux fils jusqu’à `parts` nonces réussis. */
-async function resoudreHashcash(scenario: Scenario & { algorithme: 'sha256' | 'argon2id' }, graine: Uint8Array, env: Environnement, onEssais: (essais: number, parts: number) => void): Promise<{ nonces: number[]; essais: number }> {
-  const fils = filsEffectifs(scenario, env.coeurs)
+async function resoudreHashcash(scenario: Scenario & { algorithme: 'sha256' | 'argon2id' }, graine: Uint8Array, fils: number, env: Environnement, onEssais: (essais: number, parts: number) => void): Promise<{ nonces: number[]; essais: number }> {
   const tranche = scenario.algorithme === 'sha256' ? 1 << 14 : 1
   const travailleurs = Array.from({ length: fils }, () => env.creerTravailleur())
   try {
@@ -110,11 +109,10 @@ async function resoudreHashcash(scenario: Scenario & { algorithme: 'sha256' | 'a
   }
 }
 
-/** Une répétition : un défi neuf, résolu puis vérifié. */
-export async function repetition(scenario: Scenario, env: Environnement, onEssais: (essais: number, parts: number) => void = () => {}): Promise<Repetition> {
+/** Une répétition : un défi neuf, résolu sur `fils` fils, puis vérifié. */
+export async function repetition(scenario: Scenario, fils: number, env: Environnement, onEssais: (essais: number, parts: number) => void = () => {}): Promise<Repetition> {
   env.signal?.throwIfAborted()
   const graine = graineAleatoire()
-  const fils = filsEffectifs(scenario, env.coeurs)
   if (scenario.algorithme === 'equix') {
     const { n, compilation } = scenario.parametres
     const resultat = await resoudre({
@@ -131,7 +129,7 @@ export async function repetition(scenario: Scenario, env: Environnement, onEssai
     }
   }
   const debut = performance.now()
-  const { nonces, essais } = await resoudreHashcash(scenario, graine, env, onEssais)
+  const { nonces, essais } = await resoudreHashcash(scenario, graine, fils, env, onEssais)
   const dureeMs = performance.now() - debut
   const memoireParFil = scenario.algorithme === 'argon2id' ? (scenario.parametres as ParametresArgon2id).memoireKio * 1024 : 0
   const departVerification = performance.now()
@@ -142,16 +140,83 @@ export async function repetition(scenario: Scenario, env: Environnement, onEssai
   }
 }
 
-export function resumer(scenario: Scenario, repetitions: Repetition[], coeurs: number, msParEssaiCalibre: number | null): ResultatScenario {
+export function resumer(
+  scenario: Scenario, repetitions: Repetition[], plafond: Plafond, msParEssaiCalibre: number | null,
+  suivi: { statut: StatutScenario; tentatives: number; erreurs: string[]; debitMaximal: DebitMaximal | null } = { statut: 'complet', tentatives: 1, erreurs: [], debitMaximal: null },
+): ResultatScenario {
   const durees = repetitions.map((r) => r.dureeMs)
   return {
-    scenario, filsEffectifs: filsEffectifs(scenario, coeurs), msParEssaiCalibre, repetitions,
+    scenario, ...suivi, filsEffectifs: plafond.retenus, plafond, msParEssaiCalibre, repetitions,
     statistiques: {
       dureeMs: statistiques(durees), essais: statistiques(repetitions.map((r) => r.essais)),
       verificationMs: statistiques(repetitions.map((r) => r.verification.dureeMs)), tailleOctets: statistiques(repetitions.map((r) => r.tailleOctets)),
     },
     debit100s: debit100s(durees),
   }
+}
+
+/**
+ * Débit maximal : autant de défis en parallèle que de fils permis (un fil
+ * chacun, sans gaspillage), enchaînés pendant `dureeMs`. Seuls les défis finis
+ * dans la fenêtre comptent ; ceux en cours à la fin sont abandonnés.
+ */
+export async function debitMaximal(scenario: Scenario, concurrence: number, env: Environnement, dureeMs: number): Promise<DebitMaximal> {
+  const fenetre = new AbortController()
+  const arret = (): void => fenetre.abort()
+  env.signal?.addEventListener('abort', arret, { once: true })
+  const minuterie = setTimeout(arret, dureeMs)
+  const debut = performance.now()
+  const durees: number[] = []
+  const sousEnv: Environnement = { ...env, signal: fenetre.signal }
+  const voie = async (): Promise<void> => {
+    while (!fenetre.signal.aborted) {
+      try {
+        const faite = await repetition(scenario, 1, sousEnv)
+        if (!fenetre.signal.aborted && performance.now() - debut <= dureeMs) durees.push(faite.dureeMs)
+      } catch (erreur) {
+        if (!fenetre.signal.aborted) throw erreur
+      }
+    }
+  }
+  try {
+    await Promise.all(Array.from({ length: concurrence }, voie))
+  } finally {
+    clearTimeout(minuterie)
+    env.signal?.removeEventListener('abort', arret)
+  }
+  env.signal?.throwIfAborted()
+  const ecoule = Math.min(dureeMs, performance.now() - debut)
+  return {
+    concurrence, dureeMs: ecoule, defis: durees.length, parCentSecondes: durees.length * 100_000 / ecoule,
+    dureeMoyenneDefiMs: durees.length ? durees.reduce((somme, duree) => somme + duree, 0) / durees.length : null,
+  }
+}
+
+/**
+ * Mode « calibrer » (sur la machine de référence) : difficulté estimée d’après
+ * la durée d’un essai, puis ajustée sur `defis` défis réels jusqu’à ce que la
+ * médiane approche la cible (au plus `tours` tours). SHA-256 et Argon2id ne se
+ * règlent que par bits entiers : la médiane reste alors à un facteur √2 près.
+ */
+export async function calibrerDifficulte(
+  scenario: Scenario, fils: number, cibleMs: number, env: Environnement,
+  options: { defis?: number; tours?: number; onTour?: (difficulte: number, medianeMs: number) => void } = {},
+): Promise<{ difficulte: number; medianeMs: number; defis: number }> {
+  const defis = options.defis ?? 15
+  const ms = await calibrer(scenario, env, 1000)
+  let courant: Scenario = { ...scenario, difficulte: difficultePourDuree(scenario, cibleMs, ms, fils) } as Scenario
+  let mediane = Number.NaN
+  for (let tour = 0; tour < (options.tours ?? 4); tour++) {
+    const durees: number[] = []
+    for (let rang = 0; rang < defis; rang++) durees.push((await repetition(courant, fils, env)).dureeMs)
+    mediane = centile([...durees].sort((a, b) => a - b), 0.5)
+    options.onTour?.(courant.difficulte, mediane)
+    const suivante = ajusterDifficulte(courant, mediane, cibleMs)
+    const assezProche = courant.algorithme === 'equix' ? Math.abs(Math.log(mediane / cibleMs)) < Math.log(1.15) : Math.abs(Math.log2(mediane / cibleMs)) < 0.5
+    if (assezProche || suivante === courant.difficulte) break
+    courant = { ...courant, difficulte: suivante } as Scenario
+  }
+  return { difficulte: courant.difficulte, medianeMs: mediane, defis }
 }
 
 /** Configuration d’un Web Worker pour un scénario (calibrage, vérification). */
