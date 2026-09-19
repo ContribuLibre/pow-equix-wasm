@@ -45,11 +45,18 @@ async function remplirModele(chemin: string, valeurs: Record<string, string>, la
   })
 }
 
+// Commandes de fiche machine (scripts/config-machine/), montrées telles quelles dans la page du banc.
+const echapper = (texte: string): string => texte.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+const scripts: Record<string, string> = {}
+for (const [cle, fichier] of [['scriptLinux', 'linux.sh'], ['scriptMacos', 'macos.sh'], ['scriptWindows', 'windows.ps1'], ['scriptAndroid', 'android-termux.sh']] as const) {
+  scripts[cle] = echapper((await readFile(resolve(racine, 'scripts/config-machine', fichier), 'utf8')).trimEnd())
+}
+
 for (const langue of LANGUES) {
   const autre = LANGUES.find((code) => code !== langue)!
   await mkdir(resolve(site, langue, 'banc'), { recursive: true })
   await writeFile(resolve(site, langue, 'index.html'), await remplirModele('demo/modele.html', { ...TEXTES[langue].page, langue, autreCode: autre }, langue))
-  await writeFile(resolve(site, langue, 'banc', 'index.html'), await remplirModele('demo/banc/modele.html', { ...TEXTES_BANC[langue].page, langue, autreCode: autre }, langue))
+  await writeFile(resolve(site, langue, 'banc', 'index.html'), await remplirModele('demo/banc/modele.html', { ...TEXTES_BANC[langue].page, ...scripts, langue, autreCode: autre }, langue))
 }
 
 // Accueil : même règle que langueNavigateur (demo/outils.ts) ; les réglages de l’adresse suivent.

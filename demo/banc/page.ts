@@ -4,7 +4,9 @@
 import pkg from '../../package.json'
 import { descriptionAppareil, horodatage } from '../outils.ts'
 import type { Langue } from '../textes.ts'
-import { type Environnement, calibrer, calibrerDifficulte, configurations, debitMaximal, debitVerification, repetition, resumer } from './executeur.ts'
+import { type Environnement, calibrer, calibrerDifficulte, configurations, debitMaximal, debitVerification, monterParPaliers, repetition, resumer } from './executeur.ts'
+import { Garde, cleMemoire } from './garde.ts'
+import { type ConfigMachine, nomMachine, resumeMachine, validerConfigMachine } from './machine.ts'
 import {
   DUREE_BANC_VERIFICATION_MS, DUREE_DEBIT_RAPIDE_MS, type FichierScenarios, REGULARITE_MAX, REPETITIONS_RAPIDE, type Scenario, type Statistiques, TENTATIVES_MAX, auDessusDeLaCible,
   cleConfiguration, empreinteFichier, essaisAttendusScenario, estimerScenario, fichierProvisoire, msParEssaiReference, plafondFils, validerFichierScenarios,
@@ -104,6 +106,56 @@ const saisi = (): FicheAppareil['saisi'] => {
   return { modele: lire('modele'), processeur: lire('processeur'), gpu: lire('gpu'), ram: lire('ram'), remarques: lire('remarques') }
 }
 
+// Fiche machine par commande (scripts/config-machine/) : importée ou collée, gardée dans ce navigateur.
+const CLE_MACHINE = 'pow-equix-banc/machine'
+const messageMachine = element('message-machine')
+let machine: ConfigMachine | null = null
+function adopterMachine(texte: string, source: string | null): void {
+  const lecture = validerConfigMachine(texte)
+  if ('erreur' in lecture) {
+    messageMachine.textContent = t.machineRefusee(lecture.erreur)
+    messageMachine.classList.add('erreur')
+    return
+  }
+  machine = lecture.machine
+  localStorage.setItem(CLE_MACHINE, JSON.stringify(machine))
+  messageMachine.textContent = t.machineImportee(`${resumeMachine(machine)}${source ? ` (${source})` : ''}`)
+  messageMachine.classList.remove('erreur')
+  // Le modèle alimente la fiche saisie s’il est vide.
+  const champModele = fiche.elements.namedItem('modele') as HTMLInputElement
+  if (!champModele.value) champModele.value = nomMachine(machine)
+}
+const machineGardee = localStorage.getItem(CLE_MACHINE)
+if (machineGardee) adopterMachine(machineGardee, null)
+const fichierMachine = element<HTMLInputElement>('fichier-machine')
+element('importer-machine').addEventListener('click', () => fichierMachine.click())
+fichierMachine.addEventListener('change', async () => {
+  const choisi = fichierMachine.files?.[0]
+  if (choisi) adopterMachine(await choisi.text(), choisi.name)
+  fichierMachine.value = ''
+})
+const zoneMachine = element<HTMLTextAreaElement>('coller-machine')
+zoneMachine.addEventListener('input', () => {
+  if (zoneMachine.value.trim()) adopterMachine(zoneMachine.value, null)
+})
+element('oublier-machine').addEventListener('click', () => {
+  machine = null
+  localStorage.removeItem(CLE_MACHINE)
+  zoneMachine.value = ''
+  messageMachine.textContent = t.machineRetiree
+})
+for (const bouton of Array.from(document.querySelectorAll<HTMLButtonElement>('.copier-script'))) {
+  bouton.addEventListener('click', async () => {
+    const code = element(bouton.dataset.cible!)
+    try {
+      await navigator.clipboard.writeText(code.textContent ?? '')
+      bouton.textContent = t.copie
+    } catch {
+      getSelection()?.selectAllChildren(code)
+    }
+  })
+}
+
 // Scénarios : le fichier entier (durée cible, débit, calibrage, scénarios) est dans la zone de texte.
 const zone = element<HTMLTextAreaElement>('scenarios')
 const messageScenarios = element('message-scenarios')
@@ -116,10 +168,25 @@ let scenarios: Scenario[] = []
 /** Durée d’un essai sur un fil, par configuration, mesurée par « Mesurer la vitesse ». */
 const vitesses = new Map<string, number>()
 const appareil = cleAppareil(detecte.agent, JSON.stringify(detecte.ecran))
+// Garde-fou des fils : une tentative restée ouverte au chargement est un plantage.
+const garde = new Garde(localStorage, appareil)
+const plantages = garde.constaterPlantages()
+function afficherGarde(): void {
+  const limites = Object.entries(garde.instantane()).filter(([, etat]) => etat.limite !== null).map(([memoire, etat]) => `${memoire} → ${etat.limite}`)
+  element('garde').textContent = [
+    plantages.length ? t.plantagesConstates(plantages.map((p) => `${p.memoire} à ${p.fils} fils → ${p.limite}`).join(', ')) : '',
+    limites.length ? t.garde(limites.join(', ')) : t.aucuneLimite,
+  ].filter(Boolean).join(' ')
+}
+afficherGarde()
 
 const repetitionsEffectives = (scenario: Scenario): number => (rapide.checked ? Math.min(REPETITIONS_RAPIDE, scenario.repetitions) : scenario.repetitions)
 const dureeDebit = (): number => (rapide.checked ? DUREE_DEBIT_RAPIDE_MS : fichierScenarios?.dureeDebitMs ?? 0)
-const plafond = (scenario: Scenario) => plafondFils(scenario, coeurs, detecte.memoireAppareilGo)
+const plafond = (scenario: Scenario) => {
+  const memoire = cleMemoire(scenario)
+  const etat = memoire === null ? null : garde.lire(memoire)
+  return plafondFils(scenario, coeurs, detecte.memoireAppareilGo, { limite: etat?.limite ?? null, raison: etat?.raison ?? null })
+}
 const msParEssai = (scenario: Scenario): number => vitesses.get(cleConfiguration(scenario)) ?? msParEssaiReference(scenario)
 /** Fenêtre du débit maximal : au moins dureeDebitMs, et le temps d’un défi sur un fil (plus un pour finir). */
 const fenetreDebit = (scenario: Scenario): number => Math.max(dureeDebit(), 2 * essaisAttendusScenario(scenario) * msParEssai(scenario))
@@ -150,7 +217,7 @@ function afficherScenarios(): void {
     const p = plafond(scenario)
     return [
       scenario.id, scenario.algorithme, JSON.stringify(scenario.parametres), String(scenario.parts), String(scenario.difficulte),
-      p.applique ? t.plafond(p.retenus, p.demandes) : String(p.retenus), String(repetitionsEffectives(scenario)), nombres.format(essaisAttendusScenario(scenario)), duree(estimation(scenario)),
+      p.applique ? t.plafond(p.retenus, p.demandes, p.source) : String(p.retenus), String(repetitionsEffectives(scenario)), nombres.format(essaisAttendusScenario(scenario)), duree(estimation(scenario)),
     ]
   }))
   const total = scenarios.reduce((somme, scenario) => somme + estimation(scenario), 0) + dureeVerification()
@@ -262,7 +329,9 @@ element('calibrer-difficultes').addEventListener('click', () => executer(async (
   const cible = source.dureeCibleMs
   const calibres: Scenario[] = []
   for (const scenario of source.scenarios) {
-    const resultat = await calibrerDifficulte(scenario, plafond(scenario).retenus, cible, env, {
+    const fils = await monterParPaliers(scenario, plafond(scenario).retenus, env, garde, (palier) => { etat.textContent = t.palier(scenario.id, palier) })
+    afficherGarde()
+    const resultat = await calibrerDifficulte(scenario, Math.min(fils, plafond(scenario).retenus), cible, env, {
       onTour: (difficulte, mediane, parts) => { etat.textContent = t.calibrageDifficulte(`${scenario.id} (${parts} parts)`, difficulte, duree(mediane), duree(cible)) },
     })
     calibres.push({
@@ -282,7 +351,9 @@ function construireResultats(): ResultatScenario[] {
   return scenarios.map((scenario) => {
     const etatScenario = magasin.lire(scenario.id)
     const lance = { ...scenario, repetitions: repetitionsEffectives(scenario) } as Scenario
-    return resumer(lance, etatScenario.repetitions, plafond(scenario), etatScenario.msParEssai ?? vitesses.get(cleConfiguration(scenario)) ?? null, {
+    const p = plafond(scenario)
+    const retenus = etatScenario.fils ?? p.retenus
+    return resumer(lance, etatScenario.repetitions, { ...p, retenus, applique: retenus < p.demandes }, etatScenario.msParEssai ?? vitesses.get(cleConfiguration(scenario)) ?? null, {
       statut: etatScenario.statut, tentatives: etatScenario.tentatives, erreurs: etatScenario.erreurs, debitMaximal: etatScenario.debitMaximal,
     })
   })
@@ -294,7 +365,7 @@ function exporter(): string {
     format: FORMAT_BANC, version: VERSION_BANC, date: new Date().toISOString(), paquet: pkg.version, rapide: rapide.checked,
     partiel: resultats.some((resultat) => resultat.statut !== 'complet'),
     fichierScenarios: { ...fichierScenarios!, empreinte },
-    appareil: { detecte, saisi: saisi() }, scenarios: resultats, verification: stockage().verifications(),
+    appareil: { detecte, saisi: saisi(), machine }, scenarios: resultats, verification: stockage().verifications(), gardeFils: garde.instantane(),
   }
   const texte = `${JSON.stringify(exporte, null, 2)}\n`
   element<HTMLTextAreaElement>('export').value = texte
@@ -318,13 +389,20 @@ element('lancer').addEventListener('click', () => executer(async (env) => {
   element('bloc-resultats').hidden = false
   for (const [rang, scenario] of scenarios.entries()) {
     const repetitions = repetitionsEffectives(scenario)
-    const p = plafond(scenario)
+    const memoire = cleMemoire(scenario)
+    // Paliers de mémoire (1, 2, 4, 8…) jusqu’aux fils voulus, notés pour survivre à un plantage.
+    const atteint = await monterParPaliers(scenario, plafond(scenario).retenus, env, garde, (palier) => { etat.textContent = t.palier(scenario.id, palier) })
+    afficherGarde()
+    const p = { ...plafond(scenario) }
+    if (atteint < p.retenus) Object.assign(p, { retenus: atteint, applique: atteint < p.demandes, source: 'garde' as const })
+    magasin.alignerFils(scenario.id, p.retenus)
     const parRepetition = (estimation(scenario) - fenetreDebit(scenario)) / repetitions
     // Jusqu’à 3 tentatives ; une annulation n’en consomme pas.
     while (magasin.commencerTentative(scenario.id)) {
       const courant = magasin.lire(scenario.id)
       etat.textContent = t.tentative(scenario.id, courant.tentatives, TENTATIVES_MAX)
       try {
+        garde.commencer(memoire, p.retenus)
         magasin.modifier(scenario.id, (e) => { e.msParEssai = vitesses.get(cleConfiguration(scenario)) ?? null })
         for (let numero = magasin.lire(scenario.id).repetitions.length + 1; numero <= repetitions; numero++) {
           etat.textContent = t.enCours(scenario.id, rang + 1, scenarios.length, numero, repetitions)
@@ -340,8 +418,11 @@ element('lancer').addEventListener('click', () => executer(async (env) => {
           avancer(fenetreDebit(scenario))
         }
         magasin.modifier(scenario.id, (e) => { e.statut = 'complet' })
+        garde.reussir(memoire, p.retenus)
         afficherResultats(construireResultats())
       } catch (erreur) {
+        // Erreur rattrapée ou annulation : pas un plantage de l’onglet.
+        garde.abandonner(memoire)
         if (annulation?.signal.aborted) {
           magasin.rendreTentative(scenario.id)
           throw erreur
@@ -380,6 +461,11 @@ element('exporter-partiel').addEventListener('click', () => {
   element('bloc-resultats').hidden = false
   telecharger(nomExport(dernierExport), dernierExport)
 })
+element('lever-limites').addEventListener('click', () => {
+  element('garde').textContent = t.limitesLevees(Garde.toutEffacer(localStorage))
+  plantages.length = 0
+  afficherScenarios()
+})
 element('effacer').addEventListener('click', () => {
   element('reprise').textContent = t.efface(Stockage.toutEffacer(localStorage))
   element('bloc-resultats').hidden = true
@@ -394,7 +480,7 @@ function afficherResultats(resultats: ResultatScenario[]): void {
     const s = resultat.statistiques.dureeMs
     const premiere = resultat.repetitions[0]
     const memoire = premiere ? `${taille(premiere.memoireOctets)}${premiere.memoire === 'estimee' ? ' ≈' : ''}` : ''
-    const fils = resultat.plafond.applique ? t.plafond(resultat.plafond.retenus, resultat.plafond.demandes) : String(resultat.filsEffectifs)
+    const fils = resultat.plafond.applique ? t.plafond(resultat.plafond.retenus, resultat.plafond.demandes, resultat.plafond.source) : String(resultat.filsEffectifs)
     if (!resultat.repetitions.length) return [resultat.scenario.id, t.statuts[resultat.statut], fils, '0', ...Array(16).fill('')]
     const cible = fichierScenarios?.dureeCibleMs ?? 0
     return [

@@ -20,6 +20,22 @@
       <h2 id="titre-fiche">{{fiche}}</h2>
       <p class="discret">{{ficheAide}}</p>
       <dl id="detecte" class="grille"></dl>
+      <details class="config-machine">
+        <summary>{{configMachine}}</summary>
+        <p class="discret">{{configMachineAide}}</p>
+        <h3>Linux</h3><pre><code id="script-linux">{{scriptLinux}}</code></pre><button type="button" class="copier-script" data-cible="script-linux">{{copierCommande}}</button>
+        <h3>macOS</h3><pre><code id="script-macos">{{scriptMacos}}</code></pre><button type="button" class="copier-script" data-cible="script-macos">{{copierCommande}}</button>
+        <h3>Windows (PowerShell)</h3><pre><code id="script-windows">{{scriptWindows}}</code></pre><button type="button" class="copier-script" data-cible="script-windows">{{copierCommande}}</button>
+        <h3>Android (Termux)</h3><pre><code id="script-android">{{scriptAndroid}}</code></pre><button type="button" class="copier-script" data-cible="script-android">{{copierCommande}}</button>
+        <p class="discret">{{sansTerminal}}</p>
+      </details>
+      <div class="actions">
+        <button id="importer-machine" type="button">{{importerMachine}}</button>
+        <input id="fichier-machine" type="file" accept="application/json,.json" hidden>
+        <button id="oublier-machine" type="button">{{oublierMachine}}</button>
+      </div>
+      <textarea id="coller-machine" rows="3" placeholder="{{collerMachine}}" spellcheck="false"></textarea>
+      <p id="message-machine" class="message" role="status" aria-live="polite"></p>
       <form id="fiche" class="fiche">
         <label>{{modele}} <input name="modele" placeholder="{{modeleExemple}}"></label>
         <label>{{processeur}} <input name="processeur" placeholder="{{processeurExemple}}"></label>
@@ -55,9 +71,11 @@
         <button id="annuler" type="button" hidden>{{annuler}}</button>
       </div>
       <p id="reprise" class="discret" role="status"></p>
+      <p id="garde" class="discret" role="status"></p>
       <div class="actions">
         <button id="exporter-partiel" type="button">{{exporterPartiel}}</button>
         <button id="effacer" type="button">{{effacer}}</button>
+        <button id="lever-limites" type="button">{{leverLimites}}</button>
       </div>
       <h3>{{reference}}</h3>
       <p class="discret">{{referenceAide}}</p>

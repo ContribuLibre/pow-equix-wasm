@@ -36,9 +36,18 @@ export interface TextesBanc {
     debitEnCours: (id: string, concurrence: number, duree: string) => string
     calibrageDifficulte: (id: string, difficulte: number, mediane: string, cible: string) => string
     difficultesCalibrees: (cible: string) => string
-    plafond: (retenus: number, demandes: number) => string
+    plafond: (retenus: number, demandes: number, source: 'deviceMemory' | 'garde' | null) => string
     statuts: Record<'complet' | 'incomplet' | 'enCours' | 'nonCommence', string>
     auDessus: string
+    machineImportee: (resume: string) => string
+    machineRefusee: (message: string) => string
+    machineRetiree: string
+    copie: string
+    garde: (limites: string) => string
+    aucuneLimite: string
+    plantagesConstates: (liste: string) => string
+    limitesLevees: (nombre: number) => string
+    palier: (id: string, fils: number) => string
   }
 }
 
@@ -53,6 +62,14 @@ const fr: TextesBanc = {
     autreLangue: 'English',
     autreLangueTitre: 'Same page in English',
     fiche: 'Fiche de l’appareil',
+    configMachine: 'Fiche machine par commande (facultatif, recommandé)',
+    configMachineAide: 'Copie la commande de ton système dans un terminal : elle écrit config-machine.json dans le dossier courant et l’affiche (modèle, processeur et fréquence, cœurs physiques et logiques, mémoire vive, GPU, système), sans rien envoyer sur le réseau. Importe ensuite le fichier, ou colle son contenu ci-dessous : il est joint à l’export.',
+    copierCommande: 'Copier la commande',
+    sansTerminal: 'Sans terminal : remplis simplement les champs ci-dessous (au moins le modèle).',
+    importerMachine: 'Importer config-machine.json…',
+    oublierMachine: 'Retirer la fiche machine',
+    collerMachine: 'ou colle ici le contenu de config-machine.json',
+    leverLimites: 'Lever les limites de fils (garde-fou)',
     ficheAide: 'Détecté par la page ; complète les champs libres avant de lancer : ils identifient la machine dans le tableau.',
     modele: 'Modèle',
     modeleExemple: 'ex. ThinkPad T14 (2020), iPhone 12',
@@ -120,9 +137,18 @@ const fr: TextesBanc = {
     debitEnCours: (id, concurrence, duree) => `Débit maximal : ${id}, ${concurrence} défi(s) en parallèle pendant ${duree}…`,
     calibrageDifficulte: (id, difficulte, mediane, cible) => `Calibrage de ${id} : difficulté ${difficulte}, médiane ${mediane} pour ${cible} visées.`,
     difficultesCalibrees: (cible) => `Difficultés calibrées pour une médiane de ${cible} : télécharge le fichier de scénarios pour les autres machines.`,
-    plafond: (retenus, demandes) => `${retenus} (plafond mémoire, ${demandes} demandés)`,
+    plafond: (retenus, demandes, source) => `${retenus} (${source === 'garde' ? 'limite après plantage' : 'plafond de la mémoire annoncée'}, ${demandes} demandés)`,
     statuts: { complet: 'complet', incomplet: 'incomplet', enCours: 'en cours', nonCommence: 'non commencé' },
     auDessus: 'au-dessus de la cible',
+    machineImportee: (resume) => `Fiche machine : ${resume}.`,
+    machineRefusee: (message) => `Fiche machine refusée : ${message}.`,
+    machineRetiree: 'Fiche machine retirée.',
+    copie: 'Copié ✓',
+    garde: (limites) => `Limites de fils sur cet appareil (après plantage) : ${limites}.`,
+    aucuneLimite: 'Aucune limite de fils sur cet appareil : le banc monte jusqu’aux cœurs, par paliers (1, 2, 4, 8…), en notant chaque palier pour se protéger d’un plantage mémoire.',
+    plantagesConstates: (liste) => `Plantage constaté au dernier chargement : ${liste}. Ces réglages ne dépasseront plus ce nombre de fils sur cet appareil.`,
+    limitesLevees: (nombre) => `${nombre} limite(s) de fils levée(s).`,
+    palier: (id, fils) => `Palier de mémoire : ${id}, ${fils} fil(s)…`,
   },
 }
 
@@ -137,6 +163,14 @@ const en: TextesBanc = {
     autreLangue: 'Français',
     autreLangueTitre: 'La même page en français',
     fiche: 'Device sheet',
+    configMachine: 'Machine sheet from a command (optional, recommended)',
+    configMachineAide: 'Copy the command for your system into a terminal: it writes config-machine.json in the current folder and prints it (model, processor and frequency, physical and logical cores, RAM, GPU, system), without sending anything over the network. Then import the file, or paste its content below: it is attached to the export.',
+    copierCommande: 'Copy the command',
+    sansTerminal: 'No terminal: just fill in the fields below (at least the model).',
+    importerMachine: 'Import config-machine.json…',
+    oublierMachine: 'Remove the machine sheet',
+    collerMachine: 'or paste the content of config-machine.json here',
+    leverLimites: 'Lift the thread limits (safeguard)',
     ficheAide: 'Detected by the page; fill in the free fields before starting: they identify the machine in the table.',
     modele: 'Model',
     modeleExemple: 'e.g. ThinkPad T14 (2020), iPhone 12',
@@ -204,9 +238,18 @@ const en: TextesBanc = {
     debitEnCours: (id, concurrence, duree) => `Maximum throughput: ${id}, ${concurrence} challenge(s) in parallel for ${duree}…`,
     calibrageDifficulte: (id, difficulte, mediane, cible) => `Calibrating ${id}: difficulty ${difficulte}, median ${mediane} for a target of ${cible}.`,
     difficultesCalibrees: (cible) => `Difficulties calibrated for a median of ${cible}: download the scenario file for the other machines.`,
-    plafond: (retenus, demandes) => `${retenus} (memory cap, ${demandes} requested)`,
+    plafond: (retenus, demandes, source) => `${retenus} (${source === 'garde' ? 'limit after a crash' : 'announced memory cap'}, ${demandes} requested)`,
     statuts: { complet: 'complete', incomplet: 'incomplete', enCours: 'in progress', nonCommence: 'not started' },
     auDessus: 'above target',
+    machineImportee: (resume) => `Machine sheet: ${resume}.`,
+    machineRefusee: (message) => `Machine sheet rejected: ${message}.`,
+    machineRetiree: 'Machine sheet removed.',
+    copie: 'Copied ✓',
+    garde: (limites) => `Thread limits on this device (after a crash): ${limites}.`,
+    aucuneLimite: 'No thread limit on this device: the bench goes up to the cores, in steps (1, 2, 4, 8…), recording each step to guard against a memory crash.',
+    plantagesConstates: (liste) => `Crash detected on the last load: ${liste}. These settings will no longer exceed this number of threads on this device.`,
+    limitesLevees: (nombre) => `${nombre} thread limit(s) lifted.`,
+    palier: (id, fils) => `Memory step: ${id}, ${fils} thread(s)…`,
   },
 }
 

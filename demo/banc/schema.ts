@@ -1,11 +1,13 @@
-// Schéma de l’export du banc : `pow-equix-wasm/banc`, version 2. Un fichier par
+// Schéma de l’export du banc : `pow-equix-wasm/banc`, version 3. Un fichier par
 // appareil et par lancement ; scripts/agreger-banc.ts en réunit plusieurs.
 // Toute évolution incompatible incrémente VERSION_BANC.
 
+import type { EtatGarde } from './garde.ts'
+import type { ConfigMachine } from './machine.ts'
 import type { FichierScenarios, Plafond, Scenario, Statistiques } from './scenarios.ts'
 
 export const FORMAT_BANC = 'pow-equix-wasm/banc'
-export const VERSION_BANC = 2
+export const VERSION_BANC = 3
 
 /** Fiche de l’appareil : détectée par la page, et saisie par la personne qui lance le banc. */
 export interface FicheAppareil {
@@ -21,6 +23,8 @@ export interface FicheAppareil {
   }
   /** Champs libres, remplis avant de lancer : modèle, processeur, GPU, RAM, remarques. */
   saisi: { modele: string; processeur: string; gpu: string; ram: string; remarques: string }
+  /** Fiche produite par scripts/config-machine/ (config-machine.json), ou null. */
+  machine: ConfigMachine | null
 }
 
 /** Une répétition : un défi résolu puis vérifié. */
@@ -102,4 +106,9 @@ export interface ExportBanc {
   appareil: FicheAppareil
   scenarios: ResultatScenario[]
   verification: DebitVerification[]
+  /**
+   * Garde-fou des fils sur cet appareil, par réglage mémoire (argon2id:m=…,
+   * equix:n=…) : paliers réussis, limite trouvée après un plantage et sa raison.
+   */
+  gardeFils: Record<string, EtatGarde>
 }

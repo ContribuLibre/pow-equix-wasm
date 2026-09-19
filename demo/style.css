@@ -38,3 +38,6 @@ th:first-child, td:first-child { text-align: start; }
 .case { display: flex; gap: .5rem; align-items: center; font-weight: 400; }
 .case input { width: auto; }
 #scenarios { min-height: 14rem; }
+.config-machine pre { overflow-x: auto; max-height: 14rem; padding: .6rem; border: 1px solid var(--bord); border-radius: .5rem; background: var(--fond); font-size: 12px; }
+.config-machine h3 { margin-top: 1rem; }
+#coller-machine { margin-top: .6rem; }
