@@ -11,7 +11,7 @@ resolver = "3"
 members = ["crates/hashx", "crates/pow-equix", "crates/pow-equix-wasm"]
 
 [workspace.package]
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.91"
 # Equi-X et HashX (projet Arti de Tor) sont sous LGPL-3.0-only.

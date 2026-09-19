@@ -13,7 +13,7 @@ avec du code natif d’environ × 20 à environ × 1,6. La mémoire se règle, d
 1,8 Mio (Equi-X) à 63 Mio par fil. Là où WebAssembly est désactivé, le même
 module traduit en JavaScript pur prend le relais, et le mode dégradé est signalé.
 
-- **Démo en ligne et calibrage :** <https://contribulibre.github.io/pow-equix-wasm/>
+- **Démo en ligne et calibrage :** <https://contribulibre.github.io/pow-equix-wasm/> (en français sous `/fr/`, en anglais sous `/en/` ; l’accueil choisit selon la langue du navigateur)
 - **Code source :** <https://github.com/ContribuLibre/pow-equix-wasm>
 - **Paquet npm :** [`pow-equix-wasm`](https://www.npmjs.com/package/pow-equix-wasm)
 
@@ -258,7 +258,8 @@ Si les Web Workers sont refusés, le calcul continue sur le fil courant.
 `fils: 0` force ce mode. La progression donne le moteur, le mode (compilé ou
 interprété), n, les Web Workers actifs (`filsActifs`), les essais, les parts
 trouvées, le temps écoulé, une estimation du temps restant mesurée sur
-l’appareil et la mémoire réelle des modules. L’annulation, la progression et
+l’appareil, la mémoire réelle des modules et les durées moyennes des phases
+d’un essai (`phasesMoyennes`, aussi dans le résultat). L’annulation, la progression et
 les Web Workers fonctionnent dans les deux modes ; si la compilation d’un
 programme échoue, l’interprète termine l’essai et prend le relais
 (`resultat.compilation` vaut alors `false`).
@@ -295,7 +296,7 @@ chacun surchargeable par les options, comme `memoireAppareilGo`, `coeurs` et
 
 | Situation | Fils |
 |---|---|
-| `navigator.deviceMemory` connu | d’emblée `floor(Go × 1024 × partMemoire / Mio par fil)` (`partMemoire` = 1/32), au moins 1 |
+| `navigator.deviceMemory` connu | d’emblée `floor(Go × 1024 × partMemoire / Mio par fil)` (`partMemoire` = 1/32), au moins 1, au plus le nombre de cœurs (`hardwareConcurrency`), qui peut dépasser 8 |
 | sinon, avant le premier essai | 1 |
 | r > 2,5 (lent) ou écran < 1 280 px physiques | 1 |
 | r < 1,3 (rapide) et écran ≥ 1 920 px physiques | jusqu’à 8 |
@@ -308,10 +309,34 @@ programme HashX comprise), sans l’instanciation du module ni l’attente des
 messages ; le premier essai de chaque fil, ralenti par la mise en température
 du JIT, est écarté de la moyenne dès qu’un essai suivant est connu. Sur une
 machine déjà chargée, r augmente et la politique monte moins haut : c’est voulu ; l’écran est son plus grand côté
-× `devicePixelRatio`. Toujours au plus 8 et le nombre de cœurs. Le défaut
+× `devicePixelRatio`. Sans mémoire connue, toujours au plus 8 (`filsMax`) et le
+nombre de cœurs ; avec la mémoire et les cœurs connus, le plafond est
+`min(cœurs, plafond mémoire)`, au-delà de 8 s’il le faut. Le défaut
 reste le nombre fixe de `filsConseilles`, pour la compatibilité.
 `travailleurEquix` est la fabrique de Web Worker employée par défaut, à
 réutiliser pour les envelopper (`creerTravailleur`).
+
+#### Phases d’un essai et exécution effective
+
+Chaque essai mesure ses phases là où il s’exécute (Web Worker ou fil courant),
+sans l’instanciation du module ni l’attente des messages :
+
+| Champ de `PhasesEssai` | Phase |
+|---|---|
+| `preparationMs` | programme HashX du défi et préparation de la mémoire (Rust) |
+| `generationMs` | génération du module WebAssembly qui évalue le programme (0 si interprété) |
+| `compilationMs` | compilation et instanciation de ce module (0 si interprété) |
+| `remplissageMs` | table des valeurs HashX, compilée ou interprétée |
+| `rechercheMs` | recherche des collisions et règle d’effort |
+| `totalMs` | essai complet |
+
+`progression.phasesMoyennes` et `resultat.phasesMoyennes` en donnent la moyenne
+sur un fil ; `ModuleEquix.phases`, celles du dernier essai.
+`executionEstimee({ moteur, compilation, n, dureeEssaiMs })` en déduit
+l’exécution effective (`wasmCompile`, `wasm`, `js`, `jsSansJit`) ; en
+JavaScript, la présence du JIT n’est pas observable : elle est **estimée**
+d’après la durée d’un essai, sous `SEUIL_JIT_MS` (≈ 17 s à n = 60, moyenne
+géométrique des références avec et sans JIT, × `FACTEUR_DUREE_N` selon n).
 
 Politique de sécurité du contenu : `script-src 'self' 'wasm-unsafe-eval'`
 suffit (aucun `eval`) ; les Web Workers viennent d’un Blob, donc `worker-src blob:`
@@ -499,7 +524,10 @@ Il faut Rust (via rustup, qui installe seul la version figée et la cible
 - `src/index.ts` : chargeur, deux moteurs, Web Workers, annulation,
   progression, estimations, vérification ; `src/compilation.ts` : génération
   des modules WebAssembly qui évaluent les programmes HashX.
-- `demo/` : page de démo et de calibrage ; `scripts/mesurer.ts` : mesures
+- `demo/` : page de démo et de calibrage, une seule page pour deux langues
+  (`modele.html` rempli à la construction avec `textes.ts`, `/fr/` et `/en/`,
+  accueil qui redirige selon `navigator.languages`) ; réglages et mesures
+  téléchargeables en JSON, réglages réimportables ; `scripts/mesurer.ts` : mesures
   sous Bun et dans Chromium.
 
 ## Licence

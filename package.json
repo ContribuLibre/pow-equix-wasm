@@ -1,6 +1,6 @@
 {
   "name": "pow-equix-wasm",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Preuve de travail Equi-X (Tor/Arti) en WebAssembly, à mémoire réglable (Equihash(n, 3) sur HashX) et programmes HashX compilés en WebAssembly, avec repli en JavaScript pur : un seul module qui résout dans le navigateur et vérifie côté serveur",
   "keywords": [
     "proof-of-work",
