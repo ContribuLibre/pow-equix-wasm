@@ -301,8 +301,13 @@ chacun surchargeable par les options, comme `memoireAppareilGo`, `coeurs` et
 | r < 1,3 (rapide) et écran ≥ 1 920 px physiques | jusqu’à 8 |
 | entre les deux | 2 si r > 2, sinon 4 (écran inconnu : compté comme moyen) |
 
-r est la durée moyenne mesurée d’un essai divisée par la durée de référence
-pour ce n et cette exécution (`msParEssai`) ; l’écran est son plus grand côté
+r est la durée moyenne de calcul d’un essai divisée par la durée de référence
+pour ce n et cette exécution (`msParEssai`). Chaque Web Worker mesure lui-même
+cette durée, du début de l’essai à la fin de la recherche (compilation du
+programme HashX comprise), sans l’instanciation du module ni l’attente des
+messages ; le premier essai de chaque fil, ralenti par la mise en température
+du JIT, est écarté de la moyenne dès qu’un essai suivant est connu. Sur une
+machine déjà chargée, r augmente et la politique monte moins haut : c’est voulu ; l’écran est son plus grand côté
 × `devicePixelRatio`. Toujours au plus 8 et le nombre de cœurs. Le défaut
 reste le nombre fixe de `filsConseilles`, pour la compatibilité.
 `travailleurEquix` est la fabrique de Web Worker employée par défaut, à

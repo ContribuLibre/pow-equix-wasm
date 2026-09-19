@@ -445,9 +445,16 @@ export function filsConseilles(effort: number, nombre: number): number {
 export interface EtatFils {
   /** Essais terminés, tous fils confondus ; 0 lors de l’appel de départ. */
   essaisTermines: number
-  /** Durée du premier essai terminé (instanciation du module comprise), ou null. */
+  /**
+   * Durée de calcul du premier essai terminé, mesurée par le Web Worker (compilation
+   * du programme HashX comprise, sans l’instanciation du module ni l’attente des messages), ou null.
+   */
   dureePremierEssaiMs: number | null
-  /** Durée moyenne d’un essai sur un fil, ou null. */
+  /**
+   * Durée de calcul moyenne d’un essai sur un fil, mesurée de même, ou null. Le
+   * premier essai de chaque fil (mise en température du JIT, nettement plus lent)
+   * en est écarté dès qu’un essai suivant est connu.
+   */
   dureeMoyenneEssaiMs: number | null
   /** Web Workers en service. */
   filsActifs: number
@@ -713,6 +720,9 @@ function corpsTravailleur(): void {
     const { graine, effort, graineMax, n, tailleDescription, tranche } = reglage!
     const module = exports!
     const tampon = (): Uint8Array => new Uint8Array(module.memory.buffer, module.tampon_adresse(), module.tampon_taille())
+    // Durée de calcul de l’essai seul : compilation du programme HashX comprise,
+    // sans l’instanciation du module ni l’attente des messages.
+    const debut = performance.now()
     tampon().set(graine)
     let trouve: boolean
     if (!compilation) trouve = module.essayer(graine.length, effort, compteur, n) === 1
@@ -731,8 +741,9 @@ function corpsTravailleur(): void {
       }
       trouve = module.chercher(effort) === 1
     }
+    const dureeMs = performance.now() - debut
     const solution = trouve ? tampon().slice(graineMax, graineMax + n / 4 + 1) : null
-    portee.postMessage({ type: 'essai', compteur, solution, memoire: module.memory.buffer.byteLength, compilation })
+    portee.postMessage({ type: 'essai', compteur, solution, memoire: module.memory.buffer.byteLength, compilation, dureeMs })
   }
   // Messages : `{ reglage, compteur }` d’abord, puis `{ compteur }` à chaque essai demandé
   // par le fil principal, qui distribue les compteurs un par un.
@@ -893,7 +904,11 @@ function resoudreEnParallele(options: OptionsResolution, moteur: Moteur, js: Cre
     const aRefaire: number[] = []
     let prochain = 0
     let essais = 0
-    let cumulDurees = 0
+    /** Durées de calcul : premiers essais de chaque fil (mise en température du JIT) à part. */
+    let cumulPremiers = 0
+    let premiers = 0
+    let cumulSuivants = 0
+    let suivants = 0
     let dureePremierEssaiMs: number | null = null
     let memoireMax = 0
     let filsMax = 0
@@ -953,13 +968,20 @@ function resoudreEnParallele(options: OptionsResolution, moteur: Moteur, js: Cre
       }
       travailleur.onmessage = (evenement: MessageEvent) => {
         if (fini || !fil.vivant) return
-        const message = evenement.data as { type: string; compteur?: number; solution?: Uint8Array | null; memoire?: number; compilation?: boolean; message?: string }
+        const message = evenement.data as { type: string; compteur?: number; solution?: Uint8Array | null; memoire?: number; compilation?: boolean; dureeMs?: number; message?: string }
         if (message.type === 'erreur') return perdre(fil, message.message ?? 'Erreur du Web Worker Equi-X.')
         const maintenant = performance.now()
-        const duree = maintenant - fil.debutEssai
+        // Durée de calcul mesurée par le Web Worker ; à défaut (fabrique remplacée), l’aller-retour.
+        const duree = typeof message.dureeMs === 'number' ? message.dureeMs : maintenant - fil.debutEssai
         essais++
         fil.resultats++
-        cumulDurees += duree
+        if (fil.resultats === 1) {
+          cumulPremiers += duree
+          premiers++
+        } else {
+          cumulSuivants += duree
+          suivants++
+        }
         dureePremierEssaiMs ??= duree
         const compilation = message.compilation === true
         toujoursCompile &&= compilation
@@ -993,7 +1015,7 @@ function resoudreEnParallele(options: OptionsResolution, moteur: Moteur, js: Cre
       const enCours = actifs().length
       const restants = Math.ceil((nombre - Math.min(trouvees.size, nombre)) / probabiliteEssai(effort))
       const demande = Math.floor(voulus({
-        essaisTermines: essais, dureePremierEssaiMs, dureeMoyenneEssaiMs: essais ? cumulDurees / essais : null, filsActifs: enCours, n, execution,
+        essaisTermines: essais, dureePremierEssaiMs, dureeMoyenneEssaiMs: suivants ? cumulSuivants / suivants : premiers ? cumulPremiers / premiers : null, filsActifs: enCours, n, execution,
       }))
       const cible = Math.min(Number.isFinite(demande) ? demande : 1, borner ? Math.max(1, restants) : Infinity, 64)
       for (let fil = enCours; fil < cible && croissance && !fini; fil++) if (!ajouter()) break

@@ -551,6 +551,34 @@ describe('fils adaptatifs', () => {
     expect(appels).toBe(0)
   }, 60_000)
 
+  test('la mise en route d’un Web Worker n’entre pas dans la durée mesurée d’un essai', async () => {
+    const etats: EtatFils[] = []
+    // Mise en route lente simulée : le premier message (réglage et module) n’arrive qu’après 600 ms.
+    const lent = (travailleur: Worker): Worker => {
+      let premier = true
+      const enveloppe = {
+        postMessage(message: unknown) {
+          if (premier) setTimeout(() => travailleur.postMessage(message), 600)
+          else travailleur.postMessage(message)
+          premier = false
+        },
+        terminate: () => travailleur.terminate(),
+        set onmessage(ecouteur: (evenement: MessageEvent) => void) { travailleur.onmessage = ecouteur },
+        set onerror(ecouteur: (evenement: ErrorEvent) => void) { travailleur.onerror = ecouteur },
+      }
+      return enveloppe as unknown as Worker
+    }
+    await resoudre({
+      octets, graine, effort: 1, nombre: 2, creerTravailleur: (moteur, js) => lent(travailleurEquix(moteur, js)),
+      fils: (etat) => { etats.push(etat); return 1 },
+    })
+    const mesure = etats.find((etat) => etat.essaisTermines === 1)!
+    expect(mesure.dureePremierEssaiMs).not.toBeNull()
+    // Un essai compilé dure quelques dizaines de millisecondes : ni l’attente de 600 ms ni l’instanciation n’y sont.
+    expect(mesure.dureePremierEssaiMs!).toBeLessThan(400)
+    expect(mesure.dureeMoyenneEssaiMs).toBe(mesure.dureePremierEssaiMs)
+  }, 60_000)
+
   test('filsAdaptatifs : mémoire de l’appareil connue', () => {
     // 1/32 de la mémoire : 4 Go → 128 Mio, soit 71 fils à n = 60 (plafonnés à 8), 2 à n = 80.
     expect(filsAdaptatifs({ memoireAppareilGo: 4, coeurs: 8 })(etat({ essaisTermines: 0, dureeMoyenneEssaiMs: null }))).toBe(8)
