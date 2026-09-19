@@ -34,21 +34,32 @@ beaucoup plus vite que la personne honnête. Il faut aussi pouvoir la vérifier
 avec très peu d'efforts.
 
 Le coût d’**un essai** est propre à chaque algorithme ; la difficulté règle
-ensuite le **nombre d’essais** à trouver. Ordres de grandeur pour une preuve
-réglée sur **une minute dans un navigateur, sur un cœur** :
+ensuite le **nombre d’essais** à trouver.
 
-| | SHA-256 (hashcash) | Argon2id (64 Mio par essai) | **Equi-X** (n = 60) |
-|---|---|---|---|
-| Un essai dans le navigateur | ≈ 0,1 à 10 µs | ≈ 0,3 à 1 s | **≈ 35 ms** (mesuré, programmes compilés) |
-| Essais à réaliser pour 1 min | ≈ 10⁷ à 10⁹ | ≈ 60 à 200 | **≈ 1 700** |
-| Mémoire pendant le calcul | < 1 Kio | 64 Mio par essai en cours | **≈ 3 Mio** par essai en cours (mesuré), réglable jusqu’à 64 Mio |
-| La même preuve sur matériel optimisé | carte graphique : ≈ 10 ms ; puce de minage : ≈ 1 µs | ≈ 10 à 30 s : la mémoire freine cartes graphiques et puces | **≈ 37 s** en code natif compilé (mesuré) |
-| Avantage du matériel optimisé | × 10³ à × 10⁷ | × 2 à × 5 | **≈ × 1,6** (× 20 quand le navigateur interprète HashX) |
-| Vérifier une preuve : temps | 1 empreinte, ≈ 1 µs | **1 essai complet, ≈ 0,1 à 1 s** | **≈ 0,2 ms par part**, en WebAssembly comme en natif, quel que soit n (mesuré) |
-| Vérifier une preuve : mémoire | négligeable | **64 Mio par vérification** | négligeable |
 
-Les chiffres « mesurés » viennent de ce dépôt (voir [Mesures](#mesures)) ; les
-autres sont des ordres de grandeur publics, à affiner avec la page de démo.
+| | | SHA-256 (hashcash) | Argon2id | **Equi-X** |
+|---|---|---|---|---|
+| | Mémoire nécessaire au calcul sans parallélisation | < 1 Kio | 64 Mio | réglable de 2 Mio à 64 Mio |
+| | Vérifier une preuve : temps | 1 empreinte, ≈ 1 µs | **1 essai complet, ≈ 0,1 à 1 s** | **≈ 0,2 ms par part** |
+| | Vérifier une preuve : mémoire | négligeable | **64 Mio par vérification** | négligeable |
+| Combien de preuves pour que la durée du défi varie au plus, du simple au double, sur 90% des cas | | x | y | z |
+| | Taille des preuves | x*h=?? | y*h=?? | z*h=?? |
+| | **Temps pour vérifier** les preuves du défi | ?? | ?? | ?? |
+| | **Mémoire pour vérifier** les preuves du défi | négligeable | **64 Mio par vérification** | négligeable |
+| Combien de défis visant ≈ 1 s résolu en 100 s | | {réglage pour sha256} | {réglage pour Argon2id} | {réglage pour EquiHash n=80 ou 72 ou 60, ce qui devrait minimise le plus l'écart entre toutes les config suivante} |
+| | sur un PC de 2020 {PROC, GPU, RAM} | ?? | ?? | ?? |
+| | sur un MacPro de ?? {modèle, PROC, GPU, RAM} | ?? | ?? | ?? |
+| | sur un Mobile de ?? {modèle, PROC, GPU, RAM} | ?? | ?? | ?? |
+| | sur un Mobile de ?? {modèle, PROC, GPU, RAM} | ?? | ?? | ?? |
+| | avec 10_000€ de materiel optimisé SHA256 {ASIC, PROC, GPU, RAM} | ?? | ?? | ?? |
+| | avec 10_000€ de materiel optimisé Equi-X {Supercalculateur/grosse machine, PROC, GPU, RAM} | ?? | ?? | ?? |
+| | avec 1_000_000€ de materiel optimisé SHA256 {ASIC, PROC, GPU, RAM} | ?? | ?? | ?? |
+| | avec 1_000_000€ de materiel optimisé Equi-X {Supercalculateur/grosse machine, PROC, GPU, RAM} | ?? | ?? | ?? |
+| Écart en **sénario d'usage**, du pire au meilleur  | | × 10³ à × 10⁷ | × 2 à × 5 | **≈ × 1,6** |
+| Écart en **sénario d'attaque**, du pire au meilleur  | | × 10³ à × 10⁷ | × 2 à × 5 | **≈ × 1,6** |
+| Résistance au **sénario d'attaque DoS** (vérification par seconde {sur le macPro testé})  | | × 10³ à × 10⁷ | × 2 à × 5 | **≈ × 1,6** |
+
+¹ les chiffres suivi de "¹" sont de estimation extrapolée des caractéristiques materielles. Ceux sans "¹" on été mesuré grace à la page de démo.
 
 - **SHA-256 est écarté** : cartes graphiques et puces de minage Bitcoin la
   calculent des milliers à des millions de fois plus vite qu’un navigateur, et
